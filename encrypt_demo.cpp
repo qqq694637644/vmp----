@@ -1,7 +1,6 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -40,19 +39,10 @@ __declspec(noinline) std::vector<unsigned char> XorTransform(const std::string &
 }
 } // namespace
 
-int main(int argc, char *argv[])
+int main()
 {
-    if (argc != 2)
-    {
-        std::cerr << "Usage: encrypt_demo.exe <plaintext>" << std::endl;
-        return 1;
-    }
-
-    const std::string plaintext = argv[1];
-    if (plaintext.empty())
-    {
-        throw std::invalid_argument("plaintext must not be empty");
-    }
+    // 这里直接写死明文，避免通过命令行暴露输入，也方便调试器固定复现。
+    const std::string plaintext = "1234";
 
     const std::vector<unsigned char> ciphertext = XorTransform(plaintext);
     std::cout << "plaintext : " << plaintext << std::endl;
