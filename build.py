@@ -86,17 +86,15 @@ def build_command_line(
     pdb_path: Path,
 ) -> str:
     body = (
-        "setlocal EnableDelayedExpansion && "
         f'pushd "{vcvars64.parent}" && '
         "call vcvars64.bat && "
         "popd && "
-        f"set INCLUDE={vmp_include_dir};!INCLUDE! && "
-        f"set LIB={vmp_lib_dir};!LIB! && "
         "cl /nologo /std:c++17 /utf-8 /Od /Ob0 /EHsc /Zi /FS "
+        f'/I"{vmp_include_dir}" '
         f'/Fd:"{pdb_path}" "{source_path}" '
-        f'/link /OUT:"{output_path}" /DYNAMICBASE:NO'
+        f'/link /OUT:"{output_path}" /LIBPATH:"{vmp_lib_dir}" /DYNAMICBASE:NO'
     )
-    return f'cmd.exe /d /s /v:on /c "{escape_cmd_quotes(body)}"'
+    return f'cmd.exe /d /s /c "{escape_cmd_quotes(body)}"'
 
 
 def main() -> int:

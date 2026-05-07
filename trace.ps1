@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$TargetFile = "build\encrypt_demo.exe",
-    [string[]]$TargetArgs = @("hello"),
+    [string[]]$TargetArgs = @(),
     [string]$TraceExe = "build\trace_xor.exe"
 )
 
