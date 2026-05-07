@@ -20,7 +20,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from triton import AST_NODE, ARCH, EXCEPTION, Instruction, MemoryAccess, REG, TritonContext
+from triton import ARCH, EXCEPTION, Instruction, MemoryAccess, REG, TritonContext
 
 
 ENTRY_RE = re.compile(r"已定位 XorTransform，地址=(0x[0-9A-Fa-f]+)，大小=(\d+)")
@@ -229,217 +229,16 @@ def format_hex(value: int) -> str:
     return f"0x{value:016X}"
 
 
-def parse_reference_id(node_text: str) -> int:
-    # Triton 在 AST 里会用 `ref!123` 表示“引用第 123 号符号表达式”。
-    # 这里把这个文本编号提取出来，后面才能顺着引用继续往回追。
-    match = re.fullmatch(r"ref!(\d+)", node_text)
-    if match is None:
-        raise ValueError(f"非法引用节点: {node_text}")
-    return int(match.group(1))
-
-
-def simplify_ast_node(node, ctx, ast_ctx, memo, visiting):
-    # 递归展开并折叠 AST。
+def render_symbolic_expression(expression, ctx, ast_ctx):
+    # 这里不自己重写 AST 简化器，直接用 Triton 内置的 `unroll` 展开引用，
+    # 再交给 Triton 自带的 simplify 处理。
     #
-    # 这里的目标不是做完整 SMT 简化，而是把 Triton 生成的“中间包装”去掉：
-    # - `ref!N`：追到真正定义这个值的符号表达式；
-    # - `zx/sx/extract`：压掉多余的位宽扩展和截断；
-    # - `bvxor`：尽量把多个输入字节的异或合并到一层。
-    #
-    # 如果遇到不支持的节点，直接报错。开发阶段不能悄悄吞掉，因为那会让公式看起来“能跑”，
-    # 实际上却可能已经偏了。
-    node_type = node.getType()
-
-    # 叶子节点直接返回：
-    # - VARIABLE：输入符号，比如 plaintext_0 / key_0；
-    # - BV / INTEGER / STRING：常量或标量，不需要再展开。
-    if node_type in (AST_NODE.VARIABLE, AST_NODE.BV, AST_NODE.INTEGER, AST_NODE.STRING):
-        return node
-
-    if node_type == AST_NODE.REFERENCE:
-        # 关键点：这里不是枚举所有符号表达式，而是只沿当前节点引用的那个 ref 继续回溯。
-        # 这样能把搜索范围从“全表扫描”缩成“输出依赖链”。
-        ref_id = parse_reference_id(str(node))
-        if ref_id in memo:
-            return memo[ref_id]
-        if ref_id in visiting:
-            raise RuntimeError(f"符号表达式递归引用: ref!{ref_id}")
-        # 用 ctx.isSymbolicExpressionExists / ctx.getSymbolicExpression 去取被引用的定义，
-        # 再递归展开它自己的 AST。
-        visiting.add(ref_id)
-        try:
-            if not ctx.isSymbolicExpressionExists(ref_id):
-                raise KeyError(f"找不到符号表达式: ref!{ref_id}")
-            simplified = simplify_ast_node(ctx.getSymbolicExpression(ref_id).getAst(), ctx, ast_ctx, memo, visiting)
-            memo[ref_id] = simplified
-            return simplified
-        finally:
-            visiting.remove(ref_id)
-
-    # 先把所有子节点也递归展开，再根据当前节点类型做局部折叠。
-    children = [simplify_ast_node(child, ctx, ast_ctx, memo, visiting) for child in node.getChildren()]
-
-    if node_type == AST_NODE.ZX:
-        # zero-extend 的常见情况是：一个字节被先扩展到 32/64 位，再参与运算。
-        # 这里尽量把连续扩展压平，避免最后看到一串冗长的 `zero_extend`。
-        extension_size = int(str(node.getChildren()[0]))
-        child = children[1]
-        if child.getType() == AST_NODE.ZX:
-            inner = child.getChildren()[1]
-            inner_extension = child.getBitvectorSize() - inner.getBitvectorSize()
-            return simplify_ast_node(ast_ctx.zx(extension_size + inner_extension, inner), ctx, ast_ctx, memo, visiting)
-        return ast_ctx.zx(extension_size, child)
-
-    if node_type == AST_NODE.SX:
-        # sign-extend 在这份示例里不多，但仍然保留统一处理。
-        extension_size = int(str(node.getChildren()[0]))
-        return ast_ctx.sx(extension_size, children[1])
-
-    if node_type == AST_NODE.EXTRACT:
-        # extract 常出现在“从更宽的中间值里切回 8 位结果”的地方。
-        # 如果它只是从 zero-extend 的结果里取低位，这里就把包装去掉。
-        high = int(str(node.getChildren()[0]))
-        low = int(str(node.getChildren()[1]))
-        child = children[2]
-        if child.getType() == AST_NODE.ZX:
-            inner = child.getChildren()[1]
-            inner_size = inner.getBitvectorSize()
-            width = high - low + 1
-            if low == 0:
-                if width > inner_size:
-                    return simplify_ast_node(ast_ctx.zx(width - inner_size, inner), ctx, ast_ctx, memo, visiting)
-                if width == inner_size:
-                    return inner
-            if high < inner_size:
-                return simplify_ast_node(ast_ctx.extract(high, low, inner), ctx, ast_ctx, memo, visiting)
-        return ast_ctx.extract(high, low, child)
-
-    if node_type == AST_NODE.CONCAT:
-        # CONCAT 用来拼接字节序列，例如把 8 个字节拼成 64 位寄存器值。
-        return ast_ctx.concat(children)
-
-    if node_type == AST_NODE.BVXOR:
-        # 这就是示例算法的核心：把 plaintext 和 key 做按字节异或。
-        # 如果两边都只是同样宽度的 zero-extend 包装，就把包装剥掉后再合并。
-        left, right = children
-        if left.getType() == AST_NODE.ZX and right.getType() == AST_NODE.ZX:
-            left_inner = left.getChildren()[1]
-            right_inner = right.getChildren()[1]
-            left_extension = left.getBitvectorSize() - left_inner.getBitvectorSize()
-            right_extension = right.getBitvectorSize() - right_inner.getBitvectorSize()
-            if left_extension == right_extension:
-                inner = ast_ctx.bvxor(left_inner, right_inner)
-                return simplify_ast_node(ast_ctx.zx(left_extension, inner), ctx, ast_ctx, memo, visiting)
-        return ast_ctx.bvxor(left, right)
-
-    if node_type == AST_NODE.BVADD:
-        return ast_ctx.bvadd(children[0], children[1])
-
-    if node_type == AST_NODE.BVAND:
-        return ast_ctx.bvand(children[0], children[1])
-
-    if node_type == AST_NODE.BVOR:
-        return ast_ctx.bvor(children[0], children[1])
-
-    if node_type == AST_NODE.BVSUB:
-        return ast_ctx.bvsub(children[0], children[1])
-
-    if node_type == AST_NODE.BVNOT:
-        return ast_ctx.bvnot(children[0])
-
-    if node_type == AST_NODE.BVNEG:
-        return ast_ctx.bvneg(children[0])
-
-    if node_type == AST_NODE.BVNAND:
-        return ast_ctx.bvnand(children[0], children[1])
-
-    if node_type == AST_NODE.BVNOR:
-        return ast_ctx.bvnor(children[0], children[1])
-
-    if node_type == AST_NODE.BVXNOR:
-        return ast_ctx.bvxnor(children[0], children[1])
-
-    if node_type == AST_NODE.BVSHL:
-        return ast_ctx.bvshl(children[0], children[1])
-
-    if node_type == AST_NODE.BVLSHR:
-        return ast_ctx.bvlshr(children[0], children[1])
-
-    if node_type == AST_NODE.BVASHR:
-        return ast_ctx.bvashr(children[0], children[1])
-
-    if node_type == AST_NODE.BVROL:
-        return ast_ctx.bvrol(children[0], children[1])
-
-    if node_type == AST_NODE.BVROR:
-        return ast_ctx.bvror(children[0], children[1])
-
-    if node_type == AST_NODE.BVUDIV:
-        return ast_ctx.bvudiv(children[0], children[1])
-
-    if node_type == AST_NODE.BVSDIV:
-        return ast_ctx.bvsdiv(children[0], children[1])
-
-    if node_type == AST_NODE.BVUREM:
-        return ast_ctx.bvurem(children[0], children[1])
-
-    if node_type == AST_NODE.BVSREM:
-        return ast_ctx.bvsrem(children[0], children[1])
-
-    if node_type == AST_NODE.BVSMOD:
-        return ast_ctx.bvsmod(children[0], children[1])
-
-    if node_type == AST_NODE.BVULT:
-        return ast_ctx.bvult(children[0], children[1])
-
-    if node_type == AST_NODE.BVULE:
-        return ast_ctx.bvule(children[0], children[1])
-
-    if node_type == AST_NODE.BVUGT:
-        return ast_ctx.bvugt(children[0], children[1])
-
-    if node_type == AST_NODE.BVUGE:
-        return ast_ctx.bvuge(children[0], children[1])
-
-    if node_type == AST_NODE.BVSLT:
-        return ast_ctx.bvslt(children[0], children[1])
-
-    if node_type == AST_NODE.BVSLE:
-        return ast_ctx.bvsle(children[0], children[1])
-
-    if node_type == AST_NODE.BVSGT:
-        return ast_ctx.bvsgt(children[0], children[1])
-
-    if node_type == AST_NODE.BVSGE:
-        return ast_ctx.bvsge(children[0], children[1])
-
-    if node_type == AST_NODE.EQUAL:
-        return ast_ctx.equal(children[0], children[1])
-
-    if node_type == AST_NODE.DISTINCT:
-        return ast_ctx.distinct(children[0], children[1])
-
-    if node_type == AST_NODE.ITE:
-        return ast_ctx.ite(children[0], children[1], children[2])
-
-    if node_type == AST_NODE.SELECT:
-        return ast_ctx.select(children[0], children[1])
-
-    if node_type == AST_NODE.STORE:
-        # 理论上输出路径里可能出现内存 store 节点；这里保留显式处理，避免漏掉写内存语义。
-        return ast_ctx.store(children[0], children[1], children[2])
-
-    # 开发阶段不做“兜底兼容”。
-    # 如果 VMP 或样本换了 AST 形态，必须先暴露出来，再补对应节点处理。
-    raise NotImplementedError(f"暂不支持的 AST 节点: type={node_type}, node={node}")
-
-
-def simplify_symbolic_expression(expression, ctx, ast_ctx):
-    # 对单个符号表达式做“引用展开 + 结构简化”。
-    # 这里的输出才是最终给人看的公式。
-    memo: dict[int, object] = {}
-    visiting: set[int] = set()
-    return simplify_ast_node(expression.getAst(), ctx, ast_ctx, memo, visiting)
+    # 这条链的职责很明确：
+    # - `unroll`：把 ref!N 展开成真正定义它的表达式；
+    # - `simplify`：做 Triton 内置的结构化化简；
+    # - `evaluateAstViaSolver`：只负责校验，不负责“推导公式”。
+    unrolled = ast_ctx.unroll(expression.getAst())
+    return ctx.simplify(unrolled)
 
 
 def main() -> int:
@@ -507,9 +306,8 @@ def main() -> int:
         # sliceExpressions 只返回当前输出表达式真正依赖的那小撮符号表达式。
         # 这比遍历整个 symbolic table 更合理，也更符合“只看输出依赖链”的目标。
         slice_exprs = ctx.sliceExpressions(expr)
-        # 这里得到的是人能读懂的最终公式，比如：
-        # (bvxor plaintext_0 key_0)
-        formula = simplify_symbolic_expression(expr, ctx, ast_ctx)
+        # 这里的公式完全由 Triton 内置的 AST 展开和简化得到。
+        formula = render_symbolic_expression(expr, ctx, ast_ctx)
         # 用 Triton 直接对公式求值，确认公式和当前 concrete 输入/输出是一致的。
         evaluated_value = ctx.evaluateAstViaSolver(formula)
         concrete_value = concrete_output[offset]
