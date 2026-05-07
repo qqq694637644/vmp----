@@ -1,0 +1,1 @@
+python .\build.py --source-file trace_xor.cpp --output-name trace_xor.exe
