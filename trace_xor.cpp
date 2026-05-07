@@ -1,0 +1,457 @@
+#include <Windows.h>
+#include <DbgHelp.h>
+
+#include <cwchar>
+#include <cstdint>
+#include <iomanip>
+#include <iostream>
+#include <sstream>
+#include <string>
+
+#pragma comment(lib, "Dbghelp.lib")
+
+namespace
+{
+constexpr DWORD kTrapFlag = 0x100;
+constexpr BYTE kInt3Opcode = 0xCC;
+
+struct Breakpoint
+{
+    DWORD64 address = 0;
+    BYTE originalByte = 0;
+    DWORD oldProtect = 0;
+    bool armed = false;
+};
+
+struct TraceState
+{
+    HANDLE process = nullptr;
+    HANDLE thread = nullptr;
+    DWORD64 moduleBase = 0;
+    DWORD64 functionAddress = 0;
+    DWORD64 functionSize = 0;
+    DWORD64 returnAddress = 0;
+    Breakpoint entryBreakpoint;
+    bool tracing = false;
+    std::uint64_t stepIndex = 0;
+};
+
+std::string ToHex64(DWORD64 value)
+{
+    std::ostringstream stream;
+    stream << "0x" << std::uppercase << std::hex << std::setw(16) << std::setfill('0') << value;
+    return stream.str();
+}
+
+std::string BytesToHex(const BYTE *bytes, SIZE_T count)
+{
+    std::ostringstream stream;
+    stream << std::uppercase << std::hex << std::setfill('0');
+    for (SIZE_T index = 0; index < count; ++index)
+    {
+        if (index != 0)
+        {
+            stream << ' ';
+        }
+        stream << std::setw(2) << static_cast<unsigned int>(bytes[index]);
+    }
+    return stream.str();
+}
+
+void PrintLine(const std::string &text)
+{
+    std::cout << text << std::endl;
+}
+
+[[noreturn]] void Fail(const std::string &message)
+{
+    PrintLine(std::string(u8"错误：") + message + u8"，GetLastError=" + std::to_string(GetLastError()));
+    ExitProcess(1);
+}
+
+std::wstring GetParentDirectory(const std::wstring &path)
+{
+    const std::size_t position = path.find_last_of(L"\\/");
+    if (position == std::wstring::npos)
+    {
+        return L".";
+    }
+    return path.substr(0, position);
+}
+
+std::wstring QuoteArgument(const std::wstring &argument)
+{
+    if (argument.empty())
+    {
+        return L"\"\"";
+    }
+
+    std::wstring quoted = L"\"";
+    std::size_t backslashCount = 0;
+    for (wchar_t character : argument)
+    {
+        if (character == L'\\')
+        {
+            ++backslashCount;
+            continue;
+        }
+
+        if (character == L'"')
+        {
+            quoted.append(backslashCount * 2 + 1, L'\\');
+            quoted.push_back(L'"');
+            backslashCount = 0;
+            continue;
+        }
+
+        quoted.append(backslashCount, L'\\');
+        backslashCount = 0;
+        quoted.push_back(character);
+    }
+
+    quoted.append(backslashCount * 2, L'\\');
+    quoted.push_back(L'"');
+    return quoted;
+}
+
+bool ReadProcessBytes(HANDLE process, DWORD64 address, BYTE *buffer, SIZE_T length, SIZE_T &readCount)
+{
+    readCount = 0;
+    return ReadProcessMemory(process, reinterpret_cast<LPCVOID>(address), buffer, length, &readCount) != 0;
+}
+
+bool SetSoftwareBreakpoint(HANDLE process, Breakpoint &breakpoint)
+{
+    DWORD oldProtect = 0;
+    if (VirtualProtectEx(process, reinterpret_cast<LPVOID>(breakpoint.address), 1, PAGE_EXECUTE_READWRITE, &oldProtect) == 0)
+    {
+        return false;
+    }
+
+    SIZE_T readCount = 0;
+    if (ReadProcessBytes(process, breakpoint.address, &breakpoint.originalByte, 1, readCount) == false || readCount != 1)
+    {
+        DWORD ignored = 0;
+        VirtualProtectEx(process, reinterpret_cast<LPVOID>(breakpoint.address), 1, oldProtect, &ignored);
+        return false;
+    }
+
+    const BYTE int3 = kInt3Opcode;
+    SIZE_T writtenCount = 0;
+    if (WriteProcessMemory(process, reinterpret_cast<LPVOID>(breakpoint.address), &int3, 1, &writtenCount) == 0 || writtenCount != 1)
+    {
+        DWORD ignored = 0;
+        VirtualProtectEx(process, reinterpret_cast<LPVOID>(breakpoint.address), 1, oldProtect, &ignored);
+        return false;
+    }
+
+    FlushInstructionCache(process, reinterpret_cast<LPCVOID>(breakpoint.address), 1);
+
+    DWORD ignored = 0;
+    VirtualProtectEx(process, reinterpret_cast<LPVOID>(breakpoint.address), 1, oldProtect, &ignored);
+
+    breakpoint.oldProtect = oldProtect;
+    breakpoint.armed = true;
+    return true;
+}
+
+bool RestoreSoftwareBreakpoint(HANDLE process, Breakpoint &breakpoint)
+{
+    if (!breakpoint.armed)
+    {
+        return true;
+    }
+
+    DWORD oldProtect = 0;
+    if (VirtualProtectEx(process, reinterpret_cast<LPVOID>(breakpoint.address), 1, PAGE_EXECUTE_READWRITE, &oldProtect) == 0)
+    {
+        return false;
+    }
+
+    SIZE_T writtenCount = 0;
+    if (WriteProcessMemory(process, reinterpret_cast<LPVOID>(breakpoint.address), &breakpoint.originalByte, 1, &writtenCount) == 0 || writtenCount != 1)
+    {
+        DWORD ignored = 0;
+        VirtualProtectEx(process, reinterpret_cast<LPVOID>(breakpoint.address), 1, oldProtect, &ignored);
+        return false;
+    }
+
+    FlushInstructionCache(process, reinterpret_cast<LPCVOID>(breakpoint.address), 1);
+
+    DWORD ignored = 0;
+    VirtualProtectEx(process, reinterpret_cast<LPVOID>(breakpoint.address), 1, oldProtect, &ignored);
+    breakpoint.armed = false;
+    return true;
+}
+
+struct SymbolSearchContext
+{
+    DWORD64 address = 0;
+    DWORD64 size = 0;
+    bool found = false;
+};
+
+BOOL CALLBACK EnumSymbolCallback(PSYMBOL_INFOW symbol, ULONG, PVOID context)
+{
+    auto *result = static_cast<SymbolSearchContext *>(context);
+    if (symbol->Name != nullptr && std::wcsstr(symbol->Name, L"XorTransform") != nullptr)
+    {
+        result->address = symbol->Address;
+        result->size = symbol->Size;
+        result->found = true;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+bool ResolveXorTransform(HANDLE process, DWORD64 moduleBase, const std::wstring &modulePath, TraceState &state)
+{
+    const std::wstring searchPath = GetParentDirectory(modulePath);
+    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
+    if (SymInitializeW(process, searchPath.c_str(), FALSE) == 0)
+    {
+        return false;
+    }
+
+    const DWORD64 loadedBase = SymLoadModuleExW(process, nullptr, modulePath.c_str(), nullptr, moduleBase, 0, nullptr, 0);
+    if (loadedBase == 0)
+    {
+        SymCleanup(process);
+        return false;
+    }
+
+    SymbolSearchContext searchContext;
+    if (SymEnumSymbolsW(process, loadedBase, nullptr, EnumSymbolCallback, &searchContext) == 0 || searchContext.found == false)
+    {
+        SymCleanup(process);
+        return false;
+    }
+
+    state.moduleBase = loadedBase;
+    state.functionAddress = searchContext.address;
+    state.functionSize = searchContext.size;
+    return true;
+}
+
+void LogInstruction(TraceState &state, DWORD64 address)
+{
+    BYTE bytes[16] = {};
+    SIZE_T readCount = 0;
+    if (ReadProcessBytes(state.process, address, bytes, sizeof(bytes), readCount) == false || readCount == 0)
+    {
+        Fail("读取指令字节失败");
+    }
+
+    std::ostringstream stream;
+    stream << u8"步骤 " << std::setw(6) << std::setfill('0') << state.stepIndex
+           << u8" | RIP=" << ToHex64(address)
+           << u8" | 字节=" << BytesToHex(bytes, readCount);
+
+    IMAGEHLP_LINE64 lineInfo{};
+    lineInfo.SizeOfStruct = sizeof(lineInfo);
+    DWORD displacement = 0;
+    if (SymGetLineFromAddr64(state.process, address, &displacement, &lineInfo) != 0)
+    {
+        stream << u8" | 行号=" << lineInfo.LineNumber;
+    }
+
+    PrintLine(stream.str());
+}
+
+void StartTrace(TraceState &state)
+{
+    CONTEXT context{};
+    context.ContextFlags = CONTEXT_CONTROL;
+    if (GetThreadContext(state.thread, &context) == 0)
+    {
+        Fail("获取线程上下文失败");
+    }
+
+    state.returnAddress = 0;
+    SIZE_T readCount = 0;
+    if (ReadProcessBytes(state.process, context.Rsp, reinterpret_cast<BYTE *>(&state.returnAddress), sizeof(state.returnAddress), readCount) == false || readCount != sizeof(state.returnAddress))
+    {
+        Fail("读取返回地址失败");
+    }
+
+    if (RestoreSoftwareBreakpoint(state.process, state.entryBreakpoint) == false)
+    {
+        Fail("恢复入口断点失败");
+    }
+
+    context.Rip = state.entryBreakpoint.address;
+    context.EFlags |= kTrapFlag;
+    if (SetThreadContext(state.thread, &context) == 0)
+    {
+        Fail("设置线程上下文失败");
+    }
+
+    state.tracing = true;
+    state.stepIndex = 1;
+    PrintLine(std::string(u8"已进入 XorTransform，返回地址=") + ToHex64(state.returnAddress));
+    LogInstruction(state, state.entryBreakpoint.address);
+}
+
+void HandleSingleStep(TraceState &state)
+{
+    CONTEXT context{};
+    context.ContextFlags = CONTEXT_CONTROL;
+    if (GetThreadContext(state.thread, &context) == 0)
+    {
+        Fail("获取单步上下文失败");
+    }
+
+    if (context.Rip == state.returnAddress)
+    {
+        state.tracing = false;
+        PrintLine(std::string(u8"已离开 XorTransform，步骤数=") + std::to_string(state.stepIndex));
+        return;
+    }
+
+    ++state.stepIndex;
+    LogInstruction(state, context.Rip);
+
+    context.EFlags |= kTrapFlag;
+    if (SetThreadContext(state.thread, &context) == 0)
+    {
+        Fail("恢复单步标志失败");
+    }
+}
+} // namespace
+
+int wmain(int argc, wchar_t *argv[])
+{
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+
+    if (argc < 2)
+    {
+        PrintLine(u8"用法：trace_xor.exe <目标程序> [参数...]");
+        return 1;
+    }
+
+    std::wstring targetPath = argv[1];
+    std::wstring commandLine = QuoteArgument(targetPath);
+    for (int index = 2; index < argc; ++index)
+    {
+        commandLine.push_back(L' ');
+        commandLine.append(QuoteArgument(argv[index]));
+    }
+
+    STARTUPINFOW startupInfo{};
+    startupInfo.cb = sizeof(startupInfo);
+
+    PROCESS_INFORMATION processInfo{};
+    if (CreateProcessW(
+            nullptr,
+            commandLine.data(),
+            nullptr,
+            nullptr,
+            FALSE,
+            DEBUG_ONLY_THIS_PROCESS | CREATE_NO_WINDOW,
+            nullptr,
+            nullptr,
+            &startupInfo,
+            &processInfo) == 0)
+    {
+        Fail("启动目标进程失败");
+    }
+
+    TraceState state;
+    state.process = processInfo.hProcess;
+    state.thread = processInfo.hThread;
+
+    bool running = true;
+
+    while (running)
+    {
+        DEBUG_EVENT debugEvent{};
+        if (WaitForDebugEvent(&debugEvent, INFINITE) == 0)
+        {
+            Fail("等待调试事件失败");
+        }
+
+        DWORD continueStatus = DBG_CONTINUE;
+
+        switch (debugEvent.dwDebugEventCode)
+        {
+        case CREATE_PROCESS_DEBUG_EVENT:
+        {
+            const std::wstring modulePath = targetPath;
+            if (ResolveXorTransform(processInfo.hProcess, reinterpret_cast<DWORD64>(debugEvent.u.CreateProcessInfo.lpBaseOfImage), modulePath, state) == false)
+            {
+                Fail("解析 XorTransform 符号失败");
+            }
+
+            state.entryBreakpoint.address = state.functionAddress;
+            if (SetSoftwareBreakpoint(state.process, state.entryBreakpoint) == false)
+            {
+                Fail("设置入口断点失败");
+            }
+
+            PrintLine(std::string(u8"已定位 XorTransform，地址=") + ToHex64(state.functionAddress) + u8"，大小=" + std::to_string(state.functionSize));
+
+            if (debugEvent.u.CreateProcessInfo.hFile != nullptr)
+            {
+                CloseHandle(debugEvent.u.CreateProcessInfo.hFile);
+            }
+            break;
+        }
+
+        case LOAD_DLL_DEBUG_EVENT:
+            if (debugEvent.u.LoadDll.hFile != nullptr)
+            {
+                CloseHandle(debugEvent.u.LoadDll.hFile);
+            }
+            break;
+
+        case EXCEPTION_DEBUG_EVENT:
+        {
+            const DWORD exceptionCode = debugEvent.u.Exception.ExceptionRecord.ExceptionCode;
+            const DWORD64 exceptionAddress = reinterpret_cast<DWORD64>(debugEvent.u.Exception.ExceptionRecord.ExceptionAddress);
+
+            if (exceptionCode == EXCEPTION_BREAKPOINT && state.entryBreakpoint.armed && exceptionAddress == state.entryBreakpoint.address)
+            {
+                StartTrace(state);
+                continueStatus = DBG_CONTINUE;
+                break;
+            }
+
+            if (exceptionCode == EXCEPTION_SINGLE_STEP && state.tracing)
+            {
+                HandleSingleStep(state);
+                continueStatus = DBG_CONTINUE;
+                break;
+            }
+
+            if (exceptionCode == EXCEPTION_BREAKPOINT || exceptionCode == EXCEPTION_SINGLE_STEP)
+            {
+                continueStatus = DBG_CONTINUE;
+            }
+            else
+            {
+                continueStatus = DBG_EXCEPTION_NOT_HANDLED;
+            }
+            break;
+        }
+
+        case EXIT_PROCESS_DEBUG_EVENT:
+            running = false;
+            break;
+
+        default:
+            break;
+        }
+
+        if (ContinueDebugEvent(debugEvent.dwProcessId, debugEvent.dwThreadId, continueStatus) == 0)
+        {
+            Fail("继续调试事件失败");
+        }
+    }
+
+    SymCleanup(processInfo.hProcess);
+    CloseHandle(processInfo.hThread);
+    CloseHandle(processInfo.hProcess);
+
+    return 0;
+}
