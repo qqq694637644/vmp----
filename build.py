@@ -6,7 +6,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 
@@ -88,7 +87,11 @@ def find_vcvars64(explicit: str | None) -> Path:
     )
 
 
-def build_command(
+def escape_cmd_quotes(text: str) -> str:
+    return text.replace('"', '""')
+
+
+def build_command_line(
     vcvars64: Path,
     vmp_include_dir: Path,
     vmp_lib_dir: Path,
@@ -96,36 +99,18 @@ def build_command(
     output_path: Path,
     pdb_path: Path,
 ) -> str:
-    return "\n".join(
-        [
-            "@echo off",
-            "setlocal EnableExtensions EnableDelayedExpansion",
-            f'call "{vcvars64}"',
-            "if errorlevel 1 exit /b !errorlevel!",
-            f'set "INCLUDE={vmp_include_dir};!INCLUDE!"',
-            f'set "LIB={vmp_lib_dir};!LIB!"',
-            (
-                'cl /nologo /std:c++17 /utf-8 /Od /Ob0 /EHsc /Zi /FS '
-                f'/Fd:"{pdb_path}" "{source_path}" '
-                f'/link /OUT:"{output_path}" /DYNAMICBASE:NO'
-            ),
-            "exit /b !errorlevel!",
-            "",
-        ]
+    body = (
+        "setlocal EnableDelayedExpansion && "
+        f'pushd "{vcvars64.parent}" && '
+        "call vcvars64.bat && "
+        "popd && "
+        f"set INCLUDE={vmp_include_dir};!INCLUDE! && "
+        f"set LIB={vmp_lib_dir};!LIB! && "
+        "cl /nologo /std:c++17 /utf-8 /Od /Ob0 /EHsc /Zi /FS "
+        f'/Fd:"{pdb_path}" "{source_path}" '
+        f'/link /OUT:"{output_path}" /DYNAMICBASE:NO'
     )
-
-
-def run_build_batch(batch_text: str, batch_path: Path) -> None:
-    # 直接把带中文路径和空格的命令塞给 cmd.exe 会触发参数转义问题。
-    # 这里改成临时批处理文件，让 cmd 自己解析，失败点会直接暴露。
-    batch_path.write_text(batch_text, encoding="utf-16")
-    try:
-        subprocess.run(["cmd.exe", "/d", "/c", str(batch_path)], cwd=str(ROOT), check=True)
-    finally:
-        try:
-            batch_path.unlink()
-        except FileNotFoundError:
-            pass
+    return f'cmd.exe /d /s /v:on /c "{escape_cmd_quotes(body)}"'
 
 
 def main() -> int:
@@ -159,20 +144,19 @@ def main() -> int:
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    batch_text = build_command(vcvars64, vmp_include_dir, vmp_lib_dir, source_path, output_path, pdb_path)
+    command_line = build_command_line(vcvars64, vmp_include_dir, vmp_lib_dir, source_path, output_path, pdb_path)
 
     print(f"源文件: {source_path.relative_to(ROOT)}")
     print(f"输出目录: {output_dir.relative_to(ROOT)}")
     print(f"运行时: {vmp_dll_path}")
-    print_command(["cmd.exe", "/d", "/c", str(output_dir / "build.cmd")])
+    print(f"> {command_line}")
 
     if args.dry_run:
         print(f"PDB: {pdb_path.relative_to(ROOT)}")
         print(f"产物: {output_path.relative_to(ROOT)}")
         return 0
 
-    batch_path = output_dir / "build.cmd"
-    run_build_batch(batch_text, batch_path)
+    subprocess.run(command_line, cwd=str(ROOT), check=True)
 
     if not output_path.exists():
         raise FileNotFoundError(f"编译完成但未找到目标文件: {output_path}")
