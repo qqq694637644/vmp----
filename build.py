@@ -15,20 +15,6 @@ DEFAULT_VCVARS64 = Path(
     r"C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvars64.bat"
 )
 
-
-def quote_arg(arg: object) -> str:
-    text = str(arg)
-    if not text:
-        return '""'
-    if any(ch in text for ch in " \t\""):
-        return '"' + text.replace('"', '\\"') + '"'
-    return text
-
-
-def print_command(args: list[object]) -> None:
-    print("> " + " ".join(quote_arg(arg) for arg in args))
-
-
 def find_vcvars64(explicit: str | None) -> Path:
     if explicit:
         candidate = Path(explicit)
