@@ -1,0 +1,34 @@
+{
+    // 这份配置专门用于调试 recover_xor_formula.py。
+    // 目标解释器固定指向项目里的虚拟环境，避免 VSCode 选错 Python。
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "调试公式还原脚本（虚拟环境）",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/recover_xor_formula.py",
+            "python": "D:\\repos\\vmp测试实验\\myvenv\\Scripts\\python.exe",
+            "args": [
+                "${workspaceFolder}/build/trace.log"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "stopOnEntry": false,
+            "env": {
+                "PYTHONUTF8": "1",
+                "PYTHONIOENCODING": "utf-8"
+            }
+        },
+        {
+            "name": "调试当前文件",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "stopOnEntry": false
+        }
+    ]
+}
