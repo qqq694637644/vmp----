@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from triton import TritonContext
+from triton import REG, TritonContext
 
 from .models import FormulaResult, RecoveryConfig, TaintAnalysisResult
 from .trace_io import parse_trace
@@ -13,80 +13,60 @@ def render_formula(ctx: TritonContext, ast_node) -> object:
 
 
 def recover_formulas(trace_path, config: RecoveryConfig, taint_report: TaintAnalysisResult) -> tuple[int, int, tuple[FormulaResult, ...]]:
-    entry_address, function_size, steps = parse_trace(trace_path)
+    trace = parse_trace(trace_path)
+    entry_address, function_size, steps = trace
     ctx = initialize_context(config)
     ast_ctx = ctx.getAstContext()
-    if taint_report.output_bytes is None:
-        raise RuntimeError("轨迹里没有真实输出字节，无法校验公式")
+    replay_trace(ctx, steps)
 
-    sink_specs: dict[int, tuple[int, int]] = {}
-    for output_address, expr_id in taint_report.output_roots.items():
-        dependency_node = taint_report.dependency_nodes.get(expr_id)
-        if dependency_node is None or dependency_node.step_index is None:
-            raise RuntimeError(f"无法定位 sink 依赖节点: addr={hex(output_address)} expr_id={expr_id}")
-        sink_size = taint_report.output_sizes.get(output_address)
-        if sink_size is None:
-            raise RuntimeError(f"无法获取 sink 尺寸: addr={hex(output_address)}")
-        sink_specs[output_address] = (dependency_node.step_index, sink_size)
+    result_register = ctx.getRegister(REG.X86_64.RAX)
+    result_expression = ctx.getSymbolicRegister(result_register)
+    if result_expression is None:
+        raise RuntimeError("返回寄存器 RAX 没有符号表达式，无法恢复公式")
 
-    captured_sinks: dict[int, tuple[object, bytes]] = {}
+    result_name = "reg:rax"
+    root_expr_id = taint_report.result_roots.get(result_name)
+    if root_expr_id is None:
+        raise RuntimeError("第一遍没有记录返回根 reg:rax")
+    if result_expression.getId() != root_expr_id:
+        raise RuntimeError(
+            f"第二遍返回根不一致: expected={root_expr_id} actual={result_expression.getId()}"
+        )
 
-    def observer(step, instruction, context: TritonContext) -> None:
-        for output_address, (sink_step, sink_size) in sink_specs.items():
-            if step.index != sink_step:
-                continue
+    expected_slice = set(taint_report.result_slices[result_name])
+    actual_slice = ctx.sliceExpressions(result_expression)
+    actual_slice_ids = set(actual_slice.keys())
+    if expected_slice != actual_slice_ids:
+        raise RuntimeError(
+            f"第二遍切片不一致: root={result_name} expected={sorted(expected_slice)} actual={sorted(actual_slice_ids)}"
+        )
 
-            for symbolic_expression in instruction.getSymbolicExpressions():
-                origin = symbolic_expression.getOrigin()
-                if not hasattr(origin, "getAddress"):
-                    continue
-                if origin.getAddress() != output_address:
-                    continue
-                if hasattr(origin, "getSize") and origin.getSize() != sink_size:
-                    continue
-                if output_address not in captured_sinks:
-                    concrete_bytes = bytes(context.getConcreteMemoryAreaValue(output_address, sink_size))
-                    captured_sinks[output_address] = (symbolic_expression, concrete_bytes)
-                return
-
-    replay_trace(ctx, steps, observer)
+    result_bytes = taint_report.result_bytes
+    if len(result_bytes) != taint_report.result_sizes[result_name]:
+        raise RuntimeError("返回值字节长度与第一遍记录不一致")
 
     formulas: list[FormulaResult] = []
-    for output_address, expr_id in sorted(taint_report.output_roots.items()):
-        sink_size = taint_report.output_sizes[output_address]
-        expected_slice = set(taint_report.output_slices[output_address])
-        captured = captured_sinks.get(output_address)
-        if captured is None:
-            raise RuntimeError(f"第二遍没有捕获到 sink: addr={hex(output_address)} expr_id={expr_id}")
-
-        symbolic_expression, _concrete_bytes = captured
-        actual_slice = ctx.sliceExpressions(symbolic_expression)
-        actual_slice_ids = set(actual_slice.keys())
-        if expected_slice != actual_slice_ids:
+    for offset in range(taint_report.result_sizes[result_name]):
+        byte_low = offset * 8
+        byte_high = byte_low + 7
+        byte_formula = render_formula(ctx, ast_ctx.extract(byte_high, byte_low, result_expression.getAst()))
+        evaluated_value = ctx.evaluateAstViaSolver(byte_formula)
+        concrete_value = result_bytes[offset]
+        if evaluated_value != concrete_value:
             raise RuntimeError(
-                f"第二遍切片不一致: addr={hex(output_address)} expected={sorted(expected_slice)} actual={sorted(actual_slice_ids)}"
+                f"公式校验失败: root={result_name}[{offset}] 公式值={evaluated_value:#x} 实际值={concrete_value:#x}"
             )
 
-        for offset in range(sink_size):
-            byte_low = offset * 8
-            byte_high = byte_low + 7
-            byte_formula = render_formula(ctx, ast_ctx.extract(byte_high, byte_low, symbolic_expression.getAst()))
-            evaluated_value = ctx.evaluateAstViaSolver(byte_formula)
-            concrete_value = taint_report.output_bytes[offset]
-            if evaluated_value != concrete_value:
-                raise RuntimeError(
-                    f"公式校验失败: addr={hex(output_address + offset)} 公式值={evaluated_value:#x} 实际值={concrete_value:#x}"
-                )
-
-            formulas.append(
-                FormulaResult(
-                    output_address=output_address + offset,
-                    expr_id=symbolic_expression.getId(),
-                    slice_size=len(actual_slice_ids),
-                    formula_text=str(byte_formula),
-                    evaluated_value=evaluated_value,
-                    concrete_value=concrete_value,
-                )
+        formulas.append(
+            FormulaResult(
+                result_name=result_name,
+                byte_offset=offset,
+                expr_id=result_expression.getId(),
+                slice_size=len(actual_slice_ids),
+                formula_text=str(byte_formula),
+                evaluated_value=evaluated_value,
+                concrete_value=concrete_value,
             )
+        )
 
     return entry_address, function_size, tuple(formulas)

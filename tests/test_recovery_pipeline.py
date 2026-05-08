@@ -28,6 +28,8 @@ class RecoveryPipelineTest(unittest.TestCase):
         self.assertIsNotNone(trace_metadata.entry_arguments)
         self.assertIsNotNone(trace_metadata.stack_pointer)
         self.assertIsNotNone(trace_metadata.return_address)
+        self.assertIsNotNone(trace_metadata.result_bytes)
+        self.assertIsNotNone(trace_metadata.result_value)
 
         config = build_config_from_trace(
             trace_metadata,
@@ -36,18 +38,20 @@ class RecoveryPipelineTest(unittest.TestCase):
 
         self.assertEqual(len(result.formulas), 4)
         self.assertGreater(len(result.taint.tainted_steps), 0)
-        self.assertEqual(len(result.taint.output_roots), 1)
-        sink_address = next(iter(result.taint.output_roots))
-        self.assertEqual(result.taint.output_sizes[sink_address], 4)
+        self.assertEqual(list(result.taint.result_roots.keys()), ["reg:rax"])
+        self.assertEqual(result.taint.result_sizes["reg:rax"], 4)
         for formula in result.formulas:
             self.assertIn("bvxor", formula.formula_text)
             self.assertIn("extract", formula.formula_text)
         self.assertEqual(
-            [formula.output_address for formula in result.formulas],
-            [sink_address, sink_address + 1, sink_address + 2, sink_address + 3],
+            [formula.byte_offset for formula in result.formulas],
+            [0, 1, 2, 3],
         )
-        expected_ciphertext = [p ^ k for p, k in zip(trace_metadata.entry_arguments.plaintext, trace_metadata.entry_arguments.key)]
-        self.assertEqual([formula.evaluated_value for formula in result.formulas], expected_ciphertext)
+        expected_value = trace_metadata.entry_arguments.plaintext_value ^ trace_metadata.entry_arguments.key_value
+        expected_bytes = expected_value.to_bytes(4, byteorder="little")
+        self.assertEqual(result.taint.result_value, trace_metadata.result_value)
+        self.assertEqual(result.taint.result_bytes, trace_metadata.result_bytes)
+        self.assertEqual([formula.evaluated_value for formula in result.formulas], list(expected_bytes))
 
 
 if __name__ == "__main__":

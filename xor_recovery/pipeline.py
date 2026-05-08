@@ -8,14 +8,12 @@ from .symbolic import recover_formulas
 
 
 def build_config(
-    plaintext: bytes,
-    key: bytes,
+    plaintext_value: int,
+    key_value: int,
     entry_address: int,
     stack_base: int,
-    plaintext_base: int,
-    key_base: int,
-    output_base: int,
     return_address: int,
+    operand_size: int = 4,
     stack_size: int = 0x2000,
     context_base: int | None = None,
     context_size: int | None = None,
@@ -29,14 +27,12 @@ def build_config(
         raise ValueError("已指定 context_size，但没有指定 context_base")
 
     return RecoveryConfig(
-        plaintext=plaintext,
-        key=key,
+        plaintext_value=plaintext_value,
+        key_value=key_value,
         entry_address=entry_address,
         stack_base=stack_base,
-        plaintext_base=plaintext_base,
-        key_base=key_base,
-        output_base=output_base,
         return_address=return_address,
+        operand_size=operand_size,
         context_region=context_region,
         stack_size=stack_size,
     )
@@ -56,23 +52,17 @@ def build_config_from_trace(
         raise ValueError("轨迹里没有返回地址，无法构建恢复配置")
 
     arguments = trace.entry_arguments
-    if len(arguments.plaintext) != len(arguments.key):
-        raise ValueError("轨迹里的 plaintext 和 key 长度不一致")
-    if len(arguments.plaintext) != arguments.length:
-        raise ValueError("轨迹里的长度与 plaintext/key 长度不一致")
 
     # 让恢复时的栈布局直接对齐真实 RSP，而不是用固定常量猜测。
     stack_base = trace.stack_pointer - stack_size + 0x20
 
     return build_config(
-        plaintext=arguments.plaintext,
-        key=arguments.key,
+        plaintext_value=arguments.plaintext_value,
+        key_value=arguments.key_value,
         entry_address=trace.entry_address,
         stack_base=stack_base,
-        plaintext_base=arguments.plaintext_base,
-        key_base=arguments.key_base,
-        output_base=arguments.output_base,
         return_address=trace.return_address,
+        operand_size=len(arguments.plaintext),
         stack_size=stack_size,
         context_base=context_base,
         context_size=context_size,

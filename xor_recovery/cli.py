@@ -64,11 +64,11 @@ def main() -> int:
     print(f"  关键寄存器: {format_preview(result.taint.tainted_registers)}")
     print(f"  关键内存: {format_preview(result.taint.tainted_memory)}")
     print(f"  关键上下文偏移: {format_preview(result.taint.context_hits)}")
-    print("  输出 sink:")
-    for output_address, slice_ids in sorted(result.taint.output_slices.items()):
-        root_id = result.taint.output_roots[output_address]
-        sink_size = result.taint.output_sizes[output_address]
-        print(f"    {format_hex(output_address)} size={sink_size} -> root={root_id} slice_size={len(slice_ids)}")
+    print("  返回根:")
+    for result_name, slice_ids in sorted(result.taint.result_slices.items()):
+        root_id = result.taint.result_roots[result_name]
+        result_size = result.taint.result_sizes[result_name]
+        print(f"    {result_name} size={result_size} -> root={root_id} slice_size={len(slice_ids)}")
 
     print(f"  依赖节点数: {len(result.taint.dependency_graph)}")
     for expr_id, references in list(sorted(result.taint.dependency_graph.items()))[:10]:
@@ -82,7 +82,7 @@ def main() -> int:
     print("第二遍：符号执行")
     for formula in result.formulas:
         print(
-            f"  {format_hex(formula.output_address)}: {formula.formula_text} "
+            f"  {formula.result_name}[{formula.byte_offset}]: {formula.formula_text} "
             f"=> {formula.evaluated_value:#04x} (slice={formula.slice_size})"
         )
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from triton import ARCH, EXCEPTION, Instruction, MemoryAccess, REG, TritonContext
+from triton import ARCH, EXCEPTION, Instruction, REG, TritonContext
 
 from .models import RecoveryConfig, TraceStep
 
@@ -38,15 +38,6 @@ def zero_general_registers(ctx: TritonContext) -> None:
         ctx.setConcreteRegisterValue(make_register(ctx, reg_const), 0)
 
 
-def seed_buffer(ctx: TritonContext, base_address: int, data: bytes, symbol_prefix: str) -> None:
-    # 先写 concrete，再创建符号变量，最后打污点。
-    ctx.setConcreteMemoryAreaValue(base_address, data)
-    for offset in range(len(data)):
-        memory = MemoryAccess(base_address + offset, 1)
-        ctx.symbolizeMemory(memory, f"{symbol_prefix}_{offset}")
-        ctx.taintMemory(memory)
-
-
 def initialize_context(config: RecoveryConfig) -> TritonContext:
     ctx = TritonContext()
     ctx.setArchitecture(ARCH.X86_64)
@@ -56,30 +47,20 @@ def initialize_context(config: RecoveryConfig) -> TritonContext:
     stack_top = config.stack_base + config.stack_size - 0x20
     ctx.setConcreteMemoryAreaValue(stack_top, config.return_address.to_bytes(8, byteorder="little"))
 
-    seed_buffer(ctx, config.plaintext_base, config.plaintext, "plaintext")
-    seed_buffer(ctx, config.key_base, config.key, "key")
-    ctx.setConcreteMemoryAreaValue(config.output_base, b"\x00" * config.output_size)
-
     if config.context_region is not None:
         ctx.setConcreteMemoryAreaValue(config.context_region.base, b"\x00" * config.context_region.size)
 
-    ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.RCX), config.plaintext_base)
-    ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.RDX), config.key_base)
-    ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.R8), config.output_base)
-    ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.R9), config.output_size)
+    ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.RCX), config.plaintext_value)
+    ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.RDX), config.key_value)
     ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.RSP), stack_top)
     ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.RBP), stack_top)
     ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.RIP), config.entry_address)
 
-    # 入口参数寄存器先作为污点源，保证指针链和长度链能继续传播。
-    # 这里只打污点，不把寄存器本身符号化，避免把地址值混入最终公式。
-    for reg_const in (
-        REG.X86_64.RCX,
-        REG.X86_64.RDX,
-        REG.X86_64.R8,
-        REG.X86_64.R9,
-    ):
-        ctx.taintRegister(make_register(ctx, reg_const))
+    # 入口参数直接作为符号化污点源，返回值公式只保留对输入寄存器的依赖。
+    ctx.symbolizeRegister(make_register(ctx, REG.X86_64.RCX), "plaintext")
+    ctx.symbolizeRegister(make_register(ctx, REG.X86_64.RDX), "key")
+    ctx.taintRegister(make_register(ctx, REG.X86_64.RCX))
+    ctx.taintRegister(make_register(ctx, REG.X86_64.RDX))
 
     return ctx
 

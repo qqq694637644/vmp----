@@ -1,6 +1,7 @@
 #include <Windows.h>
 #include <DbgHelp.h>
 
+#include <array>
 #include <cwchar>
 #include <cstdint>
 #include <iomanip>
@@ -33,17 +34,23 @@ struct TraceState
     DWORD64 functionAddress = 0;
     DWORD64 functionSize = 0;
     DWORD64 returnAddress = 0;
-    DWORD64 plaintextAddress = 0;
-    DWORD64 keyAddress = 0;
-    DWORD64 outputAddress = 0;
-    DWORD64 length = 0;
-    std::vector<BYTE> plaintextBytes;
-    std::vector<BYTE> keyBytes;
-    std::vector<BYTE> outputBytes;
+    std::uint32_t plaintextValue = 0;
+    std::uint32_t keyValue = 0;
+    DWORD64 resultValue = 0;
     Breakpoint entryBreakpoint;
     bool tracing = false;
     std::uint64_t stepIndex = 0;
 };
+
+std::array<BYTE, 4> DwordToBytes(std::uint32_t value)
+{
+    return {
+        static_cast<BYTE>(value & 0xFF),
+        static_cast<BYTE>((value >> 8) & 0xFF),
+        static_cast<BYTE>((value >> 16) & 0xFF),
+        static_cast<BYTE>((value >> 24) & 0xFF),
+    };
+}
 
 std::string ToHex64(DWORD64 value)
 {
@@ -285,25 +292,8 @@ void StartTrace(TraceState &state)
         Fail("读取返回地址失败");
     }
 
-    state.plaintextAddress = context.Rcx;
-    state.keyAddress = context.Rdx;
-    state.outputAddress = context.R8;
-    state.length = context.R9;
-    if (state.length == 0)
-    {
-        Fail("入口参数长度为 0");
-    }
-
-    state.plaintextBytes.resize(static_cast<std::size_t>(state.length));
-    state.keyBytes.resize(static_cast<std::size_t>(state.length));
-    if (ReadProcessBytes(state.process, state.plaintextAddress, state.plaintextBytes.data(), static_cast<SIZE_T>(state.length), readCount) == false || readCount != static_cast<SIZE_T>(state.length))
-    {
-        Fail("读取 plaintext 参数失败");
-    }
-    if (ReadProcessBytes(state.process, state.keyAddress, state.keyBytes.data(), static_cast<SIZE_T>(state.length), readCount) == false || readCount != static_cast<SIZE_T>(state.length))
-    {
-        Fail("读取 key 参数失败");
-    }
+    state.plaintextValue = static_cast<std::uint32_t>(context.Rcx);
+    state.keyValue = static_cast<std::uint32_t>(context.Rdx);
 
     if (RestoreSoftwareBreakpoint(state.process, state.entryBreakpoint) == false)
     {
@@ -322,19 +312,17 @@ void StartTrace(TraceState &state)
     PrintLine(std::string(u8"已进入 XorTransform，返回地址=") + ToHex64(state.returnAddress));
     PrintLine(
         std::string(u8"参数：RSP=") + ToHex64(context.Rsp) +
-        u8"，RCX=" + ToHex64(state.plaintextAddress) +
-        u8"，RDX=" + ToHex64(state.keyAddress) +
-        u8"，R8=" + ToHex64(state.outputAddress) +
-        u8"，R9=" + ToHex64(state.length) +
-        u8"，plaintext=" + BytesToHex(state.plaintextBytes.data(), state.plaintextBytes.size()) +
-        u8"，key=" + BytesToHex(state.keyBytes.data(), state.keyBytes.size()));
+        u8"，RCX=" + ToHex64(context.Rcx) +
+        u8"，RDX=" + ToHex64(context.Rdx) +
+        u8"，plaintext=" + BytesToHex(DwordToBytes(state.plaintextValue).data(), 4) +
+        u8"，key=" + BytesToHex(DwordToBytes(state.keyValue).data(), 4));
     LogInstruction(state, state.entryBreakpoint.address);
 }
 
 void HandleSingleStep(TraceState &state)
 {
     CONTEXT context{};
-    context.ContextFlags = CONTEXT_CONTROL;
+    context.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
     if (GetThreadContext(state.thread, &context) == 0)
     {
         Fail("获取单步上下文失败");
@@ -342,14 +330,9 @@ void HandleSingleStep(TraceState &state)
 
     if (context.Rip == state.returnAddress)
     {
-        state.outputBytes.resize(static_cast<std::size_t>(state.length));
-        SIZE_T readCount = 0;
-        if (ReadProcessBytes(state.process, state.outputAddress, state.outputBytes.data(), static_cast<SIZE_T>(state.length), readCount) == false || readCount != static_cast<SIZE_T>(state.length))
-        {
-            Fail("读取输出参数失败");
-        }
-
-        PrintLine(std::string(u8"输出：") + BytesToHex(state.outputBytes.data(), state.outputBytes.size()));
+        state.resultValue = context.Rax;
+        const std::uint32_t result32 = static_cast<std::uint32_t>(state.resultValue);
+        PrintLine(std::string(u8"返回值：RAX=") + ToHex64(state.resultValue) + u8"，bytes=" + BytesToHex(DwordToBytes(result32).data(), 4));
         state.tracing = false;
         PrintLine(std::string(u8"已离开 XorTransform，步骤数=") + std::to_string(state.stepIndex));
         return;

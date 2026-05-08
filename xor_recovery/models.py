@@ -14,12 +14,31 @@ class TraceStep:
 
 @dataclass(frozen=True)
 class EntryArguments:
-    plaintext_base: int
-    key_base: int
-    output_base: int
-    length: int
+    plaintext_value: int
+    key_value: int
     plaintext: bytes
     key: bytes
+
+
+@dataclass(frozen=True)
+class EntryRegisters:
+    rax: int
+    rbx: int
+    rcx: int
+    rdx: int
+    rsi: int
+    rdi: int
+    rbp: int
+    rsp: int
+    r8: int
+    r9: int
+    r10: int
+    r11: int
+    r12: int
+    r13: int
+    r14: int
+    r15: int
+    eflags: int
 
 
 @dataclass(frozen=True)
@@ -28,9 +47,11 @@ class TraceMetadata:
     function_size: int
     steps: tuple[TraceStep, ...]
     entry_arguments: EntryArguments | None = None
+    entry_registers: EntryRegisters | None = None
     stack_pointer: int | None = None
     return_address: int | None = None
-    output_bytes: bytes | None = None
+    result_value: int | None = None
+    result_bytes: bytes | None = None
 
     def __iter__(self):
         yield self.entry_address
@@ -53,28 +74,22 @@ class MemoryRegion:
 
 @dataclass(frozen=True)
 class RecoveryConfig:
-    plaintext: bytes
-    key: bytes
+    plaintext_value: int
+    key_value: int
     entry_address: int
     stack_base: int
-    plaintext_base: int
-    key_base: int
-    output_base: int
     return_address: int
+    operand_size: int = 4
+    entry_registers: EntryRegisters | None = None
     context_region: MemoryRegion | None = None
     stack_size: int = 0x2000
 
     @property
-    def output_size(self) -> int:
-        return len(self.plaintext)
+    def result_size(self) -> int:
+        return self.operand_size
 
     def tracked_regions(self) -> tuple[MemoryRegion, ...]:
-        regions = [
-            MemoryRegion("plaintext", self.plaintext_base, len(self.plaintext)),
-            MemoryRegion("key", self.key_base, len(self.key)),
-            MemoryRegion("output", self.output_base, len(self.plaintext)),
-            MemoryRegion("stack", self.stack_base, self.stack_size),
-        ]
+        regions = [MemoryRegion("stack", self.stack_base, self.stack_size)]
         if self.context_region is not None:
             regions.append(self.context_region)
         return tuple(regions)
@@ -93,10 +108,11 @@ class TaintAnalysisResult:
     tainted_steps: tuple[TraceStep, ...]
     dependency_nodes: dict[int, DependencyNode]
     dependency_graph: dict[int, tuple[int, ...]]
-    output_roots: dict[int, int]
-    output_slices: dict[int, tuple[int, ...]]
-    output_sizes: dict[int, int]
-    output_bytes: bytes
+    result_roots: dict[str, int]
+    result_slices: dict[str, tuple[int, ...]]
+    result_sizes: dict[str, int]
+    result_value: int
+    result_bytes: bytes
     tainted_memory: tuple[str, ...]
     tainted_registers: tuple[str, ...]
     context_hits: tuple[str, ...]
@@ -104,7 +120,8 @@ class TaintAnalysisResult:
 
 @dataclass(frozen=True)
 class FormulaResult:
-    output_address: int
+    result_name: str
+    byte_offset: int
     expr_id: int
     slice_size: int
     formula_text: str

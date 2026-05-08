@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from triton import TritonContext
+from triton import REG, TritonContext
 
 from .models import DependencyNode, RecoveryConfig, TaintAnalysisResult, TraceStep
 from .trace_io import parse_trace
@@ -33,19 +33,9 @@ def extract_reference_ids(ast_text: str) -> tuple[int, ...]:
     return tuple(sorted({int(ref_id) for ref_id in REF_RE.findall(ast_text)}))
 
 
-def count_reference_ids(ast_text: str) -> int:
-    return len(REF_RE.findall(ast_text))
-
-
-def is_input_origin_label(label: str) -> bool:
-    return label.startswith("plaintext+") or label.startswith("key+")
-
-
 def run_taint_analysis(trace_path, config: RecoveryConfig) -> tuple[int, int, TaintAnalysisResult]:
     trace = parse_trace(trace_path)
     entry_address, function_size, steps = trace
-    if trace.output_bytes is None:
-        raise RuntimeError("轨迹里没有可用于校验的输出字节")
     ctx = initialize_context(config)
     tracked_regions = config.tracked_regions()
 
@@ -54,7 +44,6 @@ def run_taint_analysis(trace_path, config: RecoveryConfig) -> tuple[int, int, Ta
     dependency_graph: dict[int, tuple[int, ...]] = {}
     expr_step_map: dict[int, int] = {}
     context_hits: set[str] = set()
-    sink_candidates: list[tuple[int, int, int, object, int]] = []
 
     def observer(step: TraceStep, instruction, _context: TritonContext) -> None:
         if instruction.isTainted():
@@ -79,53 +68,20 @@ def run_taint_analysis(trace_path, config: RecoveryConfig) -> tuple[int, int, Ta
                 ast=str(symbolic_expression.getAst()),
             )
 
-            origin = symbolic_expression.getOrigin()
-            if hasattr(origin, "getAddress") and symbolic_expression.isTainted():
-                origin_label = describe_origin(origin, tracked_regions)
-                if not is_input_origin_label(origin_label):
-                    size = origin.getSize() if hasattr(origin, "getSize") else 1
-                    if size == config.output_size:
-                        ast_text = str(symbolic_expression.getAst())
-                        sink_candidates.append(
-                            (
-                                step.index,
-                                origin.getAddress(),
-                                size,
-                                symbolic_expression,
-                                count_reference_ids(ast_text),
-                            )
-                        )
-
     replay_trace(ctx, steps, observer)
 
-    output_roots: dict[int, int] = {}
-    output_slices: dict[int, tuple[int, ...]] = {}
-    output_sizes: dict[int, int] = {}
+    result_register = ctx.getRegister(REG.X86_64.RAX)
+    result_expression = ctx.getSymbolicRegister(result_register)
+    if result_expression is None:
+        raise RuntimeError("返回寄存器 RAX 没有符号表达式，无法还原算法")
+    if not result_expression.isTainted():
+        raise RuntimeError("返回寄存器 RAX 没有受输入污点影响")
 
-    selected_candidates: list[tuple[int, int, int, int, object]] = []
-    for step_index, address, size, symbolic_expression, reference_count in sink_candidates:
-        concrete_bytes = bytes(ctx.getConcreteMemoryAreaValue(address, size))
-        if concrete_bytes != trace.output_bytes:
-            continue
-        selected_candidates.append((reference_count, step_index, address, size, symbolic_expression))
-
-    if not selected_candidates:
-        observed_bytes = sorted(
-            {
-                (address, bytes(ctx.getConcreteMemoryAreaValue(address, size)))
-                for _, address, size, _, _ in sink_candidates
-            }
-        )
-        raise RuntimeError(f"未在轨迹中找到与真实输出一致的 tainted store sink: {observed_bytes[:5]}")
-
-    # 先按引用层数挑最深的候选，再用更晚的写点打破平局。
-    # 这里保留最终组合出的结果，而不是更早的中间临时值。
-    selected_candidates.sort(key=lambda item: (-item[0], -item[1], item[2]))
-    _, step_index, output_address, size, symbolic_expression = selected_candidates[0]
-    slice_expressions = ctx.sliceExpressions(symbolic_expression)
-    output_roots[output_address] = symbolic_expression.getId()
-    output_slices[output_address] = tuple(sorted(slice_expressions.keys()))
-    output_sizes[output_address] = size
+    result_name = "reg:rax"
+    slice_expressions = ctx.sliceExpressions(result_expression)
+    result_roots = {result_name: result_expression.getId()}
+    result_slices = {result_name: tuple(sorted(slice_expressions.keys()))}
+    result_sizes = {result_name: config.result_size}
 
     for expr_id, expr in slice_expressions.items():
         if expr_id not in dependency_nodes:
@@ -149,10 +105,11 @@ def run_taint_analysis(trace_path, config: RecoveryConfig) -> tuple[int, int, Ta
         tainted_steps=tuple(tainted_steps),
         dependency_nodes=dependency_nodes,
         dependency_graph=dependency_graph,
-        output_roots=output_roots,
-        output_slices=output_slices,
-        output_sizes=output_sizes,
-        output_bytes=trace.output_bytes,
+        result_roots=result_roots,
+        result_slices=result_slices,
+        result_sizes=result_sizes,
+        result_value=trace.result_value if trace.result_value is not None else 0,
+        result_bytes=trace.result_bytes if trace.result_bytes is not None else b"",
         tainted_memory=tainted_memory,
         tainted_registers=tainted_registers,
         context_hits=tuple(sorted(context_hits)),

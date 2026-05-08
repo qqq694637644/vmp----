@@ -9,9 +9,9 @@ from .models import EntryArguments, TraceMetadata, TraceStep
 ENTRY_RE = re.compile(r"已定位 XorTransform，地址=(0x[0-9A-Fa-f]+)(?:，RVA=(0x[0-9A-Fa-f]+))?，大小=(\d+)")
 ENTER_RE = re.compile(r"^已进入 XorTransform，返回地址=(0x[0-9A-Fa-f]+)$")
 ARGS_RE = re.compile(
-    r"^参数：RSP=(0x[0-9A-Fa-f]+)，RCX=(0x[0-9A-Fa-f]+)，RDX=(0x[0-9A-Fa-f]+)，R8=(0x[0-9A-Fa-f]+)，R9=(0x[0-9A-Fa-f]+)，plaintext=([0-9A-Fa-f ]+)，key=([0-9A-Fa-f ]+)$"
+    r"^参数：RSP=(0x[0-9A-Fa-f]+)，RCX=(0x[0-9A-Fa-f]+)，RDX=(0x[0-9A-Fa-f]+)，plaintext=([0-9A-Fa-f ]+)，key=([0-9A-Fa-f ]+)$"
 )
-OUTPUT_RE = re.compile(r"^输出：([0-9A-Fa-f ]+)$")
+RESULT_RE = re.compile(r"^返回值：RAX=(0x[0-9A-Fa-f]+)，bytes=([0-9A-Fa-f ]+)$")
 STEP_RE = re.compile(
     r"^步骤\s+(\d+)\s+\|\s+RIP=(0x[0-9A-Fa-f]+)\s+\|\s+字节=([0-9A-Fa-f ]+)(?:\s+\|\s+行号=(\d+))?$"
 )
@@ -29,7 +29,8 @@ def parse_trace(trace_path: Path) -> TraceMetadata:
     entry_arguments: EntryArguments | None = None
     stack_pointer: int | None = None
     return_address: int | None = None
-    output_bytes: bytes | None = None
+    result_value: int | None = None
+    result_bytes: bytes | None = None
 
     for raw_line in trace_path.read_text(encoding="utf-8").splitlines():
         entry_match = ENTRY_RE.search(raw_line)
@@ -46,19 +47,18 @@ def parse_trace(trace_path: Path) -> TraceMetadata:
         args_match = ARGS_RE.match(raw_line)
         if args_match is not None:
             entry_arguments = EntryArguments(
-                plaintext_base=int(args_match.group(2), 16),
-                key_base=int(args_match.group(3), 16),
-                output_base=int(args_match.group(4), 16),
-                length=int(args_match.group(5), 16),
-                plaintext=parse_hex_bytes(args_match.group(6)),
-                key=parse_hex_bytes(args_match.group(7)),
+                plaintext_value=int(args_match.group(2), 16),
+                key_value=int(args_match.group(3), 16),
+                plaintext=parse_hex_bytes(args_match.group(4)),
+                key=parse_hex_bytes(args_match.group(5)),
             )
             stack_pointer = int(args_match.group(1), 16)
             continue
 
-        output_match = OUTPUT_RE.match(raw_line)
-        if output_match is not None:
-            output_bytes = parse_hex_bytes(output_match.group(1))
+        result_match = RESULT_RE.match(raw_line)
+        if result_match is not None:
+            result_value = int(result_match.group(1), 16)
+            result_bytes = parse_hex_bytes(result_match.group(2))
             continue
 
         step_match = STEP_RE.match(raw_line)
@@ -84,8 +84,8 @@ def parse_trace(trace_path: Path) -> TraceMetadata:
         raise ValueError("轨迹里没有找到 XorTransform 栈指针")
     if return_address is None:
         raise ValueError("轨迹里没有找到 XorTransform 返回地址")
-    if output_bytes is None:
-        raise ValueError("轨迹里没有找到 XorTransform 输出字节")
+    if result_value is None or result_bytes is None:
+        raise ValueError("轨迹里没有找到 XorTransform 返回值")
     if not steps:
         raise ValueError("轨迹里没有找到可重放的步骤")
 
@@ -96,5 +96,6 @@ def parse_trace(trace_path: Path) -> TraceMetadata:
         entry_arguments=entry_arguments,
         stack_pointer=stack_pointer,
         return_address=return_address,
-        output_bytes=output_bytes,
+        result_value=result_value,
+        result_bytes=result_bytes,
     )
