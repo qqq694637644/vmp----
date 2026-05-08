@@ -38,13 +38,45 @@ def zero_general_registers(ctx: TritonContext) -> None:
         ctx.setConcreteRegisterValue(make_register(ctx, reg_const), 0)
 
 
+def apply_entry_registers(ctx: TritonContext, config: RecoveryConfig) -> None:
+    if config.entry_registers is None:
+        raise ValueError("入口寄存器快照缺失，无法初始化 Triton 上下文")
+
+    entry = config.entry_registers
+    register_values = (
+        (REG.X86_64.RAX, entry.rax),
+        (REG.X86_64.RBX, entry.rbx),
+        (REG.X86_64.RCX, entry.rcx),
+        (REG.X86_64.RDX, entry.rdx),
+        (REG.X86_64.RSI, entry.rsi),
+        (REG.X86_64.RDI, entry.rdi),
+        (REG.X86_64.RBP, entry.rbp),
+        (REG.X86_64.RSP, entry.rsp),
+        (REG.X86_64.R8, entry.r8),
+        (REG.X86_64.R9, entry.r9),
+        (REG.X86_64.R10, entry.r10),
+        (REG.X86_64.R11, entry.r11),
+        (REG.X86_64.R12, entry.r12),
+        (REG.X86_64.R13, entry.r13),
+        (REG.X86_64.R14, entry.r14),
+        (REG.X86_64.R15, entry.r15),
+    )
+    for reg_const, value in register_values:
+        ctx.setConcreteRegisterValue(make_register(ctx, reg_const), value)
+    ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.EFLAGS), entry.eflags)
+
+
 def initialize_context(config: RecoveryConfig) -> TritonContext:
     ctx = TritonContext()
     ctx.setArchitecture(ARCH.X86_64)
     zero_general_registers(ctx)
+    apply_entry_registers(ctx, config)
 
-    ctx.setConcreteMemoryAreaValue(config.stack_base, b"\x00" * config.stack_size)
-    stack_top = config.stack_base + config.stack_size - 0x20
+    stack_bytes = config.stack_bytes if config.stack_bytes is not None else b"\x00" * config.stack_size
+    if len(stack_bytes) != config.stack_size:
+        raise ValueError("入口栈快照长度与配置不一致")
+    ctx.setConcreteMemoryAreaValue(config.stack_base, stack_bytes)
+    stack_top = config.entry_registers.rsp if config.entry_registers is not None else config.stack_base + config.stack_size - 0x20
     ctx.setConcreteMemoryAreaValue(stack_top, config.return_address.to_bytes(8, byteorder="little"))
 
     if config.context_region is not None:
@@ -52,8 +84,6 @@ def initialize_context(config: RecoveryConfig) -> TritonContext:
 
     ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.RCX), config.plaintext_value)
     ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.RDX), config.key_value)
-    ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.RSP), stack_top)
-    ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.RBP), stack_top)
     ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.RIP), config.entry_address)
 
     # 入口参数直接作为符号化污点源，返回值公式只保留对输入寄存器的依赖。

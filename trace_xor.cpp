@@ -16,6 +16,7 @@ namespace
 {
 constexpr DWORD kTrapFlag = 0x100;
 constexpr BYTE kInt3Opcode = 0xCC;
+constexpr SIZE_T kStackSnapshotSize = 0x2000;
 
 struct Breakpoint
 {
@@ -37,6 +38,7 @@ struct TraceState
     std::uint32_t plaintextValue = 0;
     std::uint32_t keyValue = 0;
     DWORD64 resultValue = 0;
+    std::vector<BYTE> stackBytes;
     Breakpoint entryBreakpoint;
     bool tracing = false;
     std::uint64_t stepIndex = 0;
@@ -51,6 +53,9 @@ std::array<BYTE, 4> DwordToBytes(std::uint32_t value)
         static_cast<BYTE>((value >> 24) & 0xFF),
     };
 }
+
+std::string ToHex64(DWORD64 value);
+void PrintLine(const std::string &text);
 
 void PrintEntryRegisters(const CONTEXT &context)
 {
@@ -314,6 +319,13 @@ void StartTrace(TraceState &state)
         Fail("读取返回地址失败");
     }
 
+    const DWORD64 stackBase = context.Rsp - kStackSnapshotSize + 0x20;
+    state.stackBytes.resize(kStackSnapshotSize);
+    if (ReadProcessBytes(state.process, stackBase, state.stackBytes.data(), kStackSnapshotSize, readCount) == false || readCount != kStackSnapshotSize)
+    {
+        Fail("读取栈快照失败");
+    }
+
     state.plaintextValue = static_cast<std::uint32_t>(context.Rcx);
     state.keyValue = static_cast<std::uint32_t>(context.Rdx);
 
@@ -333,6 +345,7 @@ void StartTrace(TraceState &state)
     state.stepIndex = 1;
     PrintLine(std::string(u8"已进入 XorTransform，返回地址=") + ToHex64(state.returnAddress));
     PrintEntryRegisters(context);
+    PrintLine(std::string(u8"栈快照=") + BytesToHex(state.stackBytes.data(), state.stackBytes.size()));
     PrintLine(
         std::string(u8"参数：RSP=") + ToHex64(context.Rsp) +
         u8"，RCX=" + ToHex64(context.Rcx) +

@@ -52,6 +52,7 @@ class TraceMetadata:
     return_address: int | None = None
     result_value: int | None = None
     result_bytes: bytes | None = None
+    stack_bytes: bytes | None = None
 
     def __iter__(self):
         yield self.entry_address
@@ -81,6 +82,7 @@ class RecoveryConfig:
     return_address: int
     operand_size: int = 4
     entry_registers: EntryRegisters | None = None
+    stack_bytes: bytes | None = None
     context_region: MemoryRegion | None = None
     stack_size: int = 0x2000
 
