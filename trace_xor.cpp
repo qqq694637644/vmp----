@@ -52,6 +52,28 @@ std::array<BYTE, 4> DwordToBytes(std::uint32_t value)
     };
 }
 
+void PrintEntryRegisters(const CONTEXT &context)
+{
+    PrintLine(
+        std::string(u8"寄存器：RAX=") + ToHex64(context.Rax) +
+        u8"，RBX=" + ToHex64(context.Rbx) +
+        u8"，RCX=" + ToHex64(context.Rcx) +
+        u8"，RDX=" + ToHex64(context.Rdx) +
+        u8"，RSI=" + ToHex64(context.Rsi) +
+        u8"，RDI=" + ToHex64(context.Rdi) +
+        u8"，RBP=" + ToHex64(context.Rbp) +
+        u8"，RSP=" + ToHex64(context.Rsp) +
+        u8"，R8=" + ToHex64(context.R8) +
+        u8"，R9=" + ToHex64(context.R9) +
+        u8"，R10=" + ToHex64(context.R10) +
+        u8"，R11=" + ToHex64(context.R11) +
+        u8"，R12=" + ToHex64(context.R12) +
+        u8"，R13=" + ToHex64(context.R13) +
+        u8"，R14=" + ToHex64(context.R14) +
+        u8"，R15=" + ToHex64(context.R15) +
+        u8"，EFLAGS=" + ToHex64(context.EFlags));
+}
+
 std::string ToHex64(DWORD64 value)
 {
     std::ostringstream stream;
@@ -310,6 +332,7 @@ void StartTrace(TraceState &state)
     state.tracing = true;
     state.stepIndex = 1;
     PrintLine(std::string(u8"已进入 XorTransform，返回地址=") + ToHex64(state.returnAddress));
+    PrintEntryRegisters(context);
     PrintLine(
         std::string(u8"参数：RSP=") + ToHex64(context.Rsp) +
         u8"，RCX=" + ToHex64(context.Rcx) +
