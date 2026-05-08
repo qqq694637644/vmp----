@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$TargetFile = "build\encrypt_demo.exe",
+    [string]$SymbolSourceFile = "build\encrypt_demo.exe",
     [string[]]$TargetArgs = @(),
     [string]$TraceExe = "build\trace_xor.exe"
 )
@@ -24,6 +25,7 @@ if ($LASTEXITCODE -ne 0) {
 
 $tracePath = Join-Path $repoRoot $TraceExe
 $targetPath = Join-Path $repoRoot $TargetFile
+$symbolPath = Join-Path $repoRoot $SymbolSourceFile
 
 if (-not (Test-Path $tracePath -PathType Leaf)) {
     throw "tracer not found: $tracePath"
@@ -33,5 +35,9 @@ if (-not (Test-Path $targetPath -PathType Leaf)) {
     throw "target not found: $targetPath"
 }
 
-$arguments = @($targetPath) + $TargetArgs
+if (-not (Test-Path $symbolPath -PathType Leaf)) {
+    throw "symbol source not found: $symbolPath"
+}
+
+$arguments = @("--symbols", $symbolPath, $targetPath) + $TargetArgs
 & $tracePath @arguments

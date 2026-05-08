@@ -7,6 +7,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #pragma comment(lib, "Dbghelp.lib")
 
@@ -28,6 +29,7 @@ struct TraceState
     HANDLE process = nullptr;
     HANDLE thread = nullptr;
     DWORD64 moduleBase = 0;
+    DWORD64 functionRva = 0;
     DWORD64 functionAddress = 0;
     DWORD64 functionSize = 0;
     DWORD64 returnAddress = 0;
@@ -204,16 +206,17 @@ BOOL CALLBACK EnumSymbolCallback(PSYMBOL_INFOW symbol, ULONG, PVOID context)
     return TRUE;
 }
 
-bool ResolveXorTransform(HANDLE process, DWORD64 moduleBase, const std::wstring &modulePath, TraceState &state)
+bool ResolveXorTransform(HANDLE process, DWORD64 moduleBase, const std::wstring &symbolPath, TraceState &state)
 {
-    const std::wstring searchPath = GetParentDirectory(modulePath);
+    const std::wstring searchPath = GetParentDirectory(symbolPath);
     SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
     if (SymInitializeW(process, searchPath.c_str(), FALSE) == 0)
     {
         return false;
     }
 
-    const DWORD64 loadedBase = SymLoadModuleExW(process, nullptr, modulePath.c_str(), nullptr, moduleBase, 0, nullptr, 0);
+    // 明确指定符号来源模块，避免依赖保护后目标文件里已经消失的 PDB/符号信息。
+    const DWORD64 loadedBase = SymLoadModuleExW(process, nullptr, symbolPath.c_str(), nullptr, moduleBase, 0, nullptr, 0);
     if (loadedBase == 0)
     {
         SymCleanup(process);
@@ -228,6 +231,7 @@ bool ResolveXorTransform(HANDLE process, DWORD64 moduleBase, const std::wstring 
     }
 
     state.moduleBase = loadedBase;
+    state.functionRva = searchContext.address - loadedBase;
     state.functionAddress = searchContext.address;
     state.functionSize = searchContext.size;
     return true;
@@ -326,16 +330,61 @@ int wmain(int argc, wchar_t *argv[])
 
     if (argc < 2)
     {
-        PrintLine(u8"用法：trace_xor.exe <目标程序> [参数...]");
+        PrintLine(u8"用法：trace_xor.exe --symbols <带符号模块> <目标程序> [参数...]");
         return 1;
     }
 
-    std::wstring targetPath = argv[1];
+    std::wstring symbolPath;
+    std::wstring targetPath;
+    std::vector<std::wstring> targetArgs;
+
+    for (int index = 1; index < argc; ++index)
+    {
+        const std::wstring argument = argv[index];
+        if (argument == L"--symbols")
+        {
+            if (index + 1 >= argc)
+            {
+                PrintLine(u8"错误：--symbols 后面必须跟一个带符号模块路径");
+                return 1;
+            }
+
+            symbolPath = argv[++index];
+            continue;
+        }
+
+        if (argument == L"--help" || argument == L"-h" || argument == L"/?")
+        {
+            PrintLine(u8"用法：trace_xor.exe --symbols <带符号模块> <目标程序> [参数...]");
+            return 0;
+        }
+
+        if (targetPath.empty())
+        {
+            targetPath = argument;
+            continue;
+        }
+
+        targetArgs.push_back(argument);
+    }
+
+    if (symbolPath.empty())
+    {
+        PrintLine(u8"错误：必须显式提供 --symbols <带符号模块>");
+        return 1;
+    }
+
+    if (targetPath.empty())
+    {
+        PrintLine(u8"错误：缺少目标程序路径");
+        return 1;
+    }
+
     std::wstring commandLine = QuoteArgument(targetPath);
-    for (int index = 2; index < argc; ++index)
+    for (const std::wstring &argument : targetArgs)
     {
         commandLine.push_back(L' ');
-        commandLine.append(QuoteArgument(argv[index]));
+        commandLine.append(QuoteArgument(argument));
     }
 
     STARTUPINFOW startupInfo{};
@@ -377,8 +426,7 @@ int wmain(int argc, wchar_t *argv[])
         {
         case CREATE_PROCESS_DEBUG_EVENT:
         {
-            const std::wstring modulePath = targetPath;
-            if (ResolveXorTransform(processInfo.hProcess, reinterpret_cast<DWORD64>(debugEvent.u.CreateProcessInfo.lpBaseOfImage), modulePath, state) == false)
+            if (ResolveXorTransform(processInfo.hProcess, reinterpret_cast<DWORD64>(debugEvent.u.CreateProcessInfo.lpBaseOfImage), symbolPath, state) == false)
             {
                 Fail("解析 XorTransform 符号失败");
             }
@@ -389,7 +437,7 @@ int wmain(int argc, wchar_t *argv[])
                 Fail("设置入口断点失败");
             }
 
-            PrintLine(std::string(u8"已定位 XorTransform，地址=") + ToHex64(state.functionAddress) + u8"，大小=" + std::to_string(state.functionSize));
+            PrintLine(std::string(u8"已定位 XorTransform，地址=") + ToHex64(state.functionAddress) + u8"，RVA=" + ToHex64(state.functionRva) + u8"，大小=" + std::to_string(state.functionSize));
 
             if (debugEvent.u.CreateProcessInfo.hFile != nullptr)
             {
