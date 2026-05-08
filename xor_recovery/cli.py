@@ -128,7 +128,7 @@ def print_algorithm_report(algorithm: RecoveredAlgorithm) -> None:
     print("整体算法导出")
     print(f"  结果根: {algorithm.result_name}")
     print(f"  简化 AST: 已生成，字符数={len(algorithm.simplified_ast_text)}")
-    print("  LLVM IR:")
+    print("  LLVM IR（结构化，未打开 O3 优化）:")
     for line in algorithm.llvm_ir.splitlines():
         print(f"    {line}")
     print("  伪代码:")

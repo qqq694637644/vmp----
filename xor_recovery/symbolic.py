@@ -1,13 +1,11 @@
 """第二遍：符号执行和公式恢复。
 
 这一层只处理已经由第一遍筛出来的返回值切片，不再重新做全量污点分析。
-目标是把返回值对应的 AST 交给 Triton 自己简化，再逐字节验证它和真实结果一致。
+目标是把最终返回值表达式交给 Triton 自己恢复，再逐字节验证它和真实结果一致。
 """
 
 from __future__ import annotations
 
-import re
-from collections import Counter
 from pathlib import Path
 
 from triton import REG, TritonContext
@@ -18,95 +16,12 @@ from .trace_io import parse_trace
 from .triton_runtime import initialize_context, replay_trace
 
 
-REF_RE = re.compile(r"ref!(\d+)")
-
-
 def render_formula(ctx: TritonContext, ast_node) -> object:
     """把 AST 交给 Triton 的内置简化器处理。
 
     这里故意不再自己写一层 AST 递归简化，避免重复实现 Triton 已经提供的能力。
     """
     return ctx.simplify(ast_node, True, True)
-
-
-def extract_reference_ids(ast_text: str) -> tuple[int, ...]:
-    """从 AST 文本中提取引用编号。
-
-    这一步只用于挑选“更像算法本体”的表达式根，不参与符号推导。
-    """
-    return tuple(sorted({int(ref_id) for ref_id in REF_RE.findall(ast_text)}))
-
-
-def select_algorithm_expression(slice_expressions) -> object:
-    """从切片里挑出最像算法本体的表达式。
-
-    这里不能直接拿 `reg:rax` 作为导出根，因为那个节点通常只是返回值打包层。
-    我们优先选那些：
-    - 被最终输出字节直接引用
-    - 自身含有旋转、异或、加法、乘法等高层操作
-    - 不是纯 `concat / extract` 的打包壳
-
-    这样导出的 AST / LLVM IR / 人类可读算法才会更接近真实算法核心。
-    """
-    texts: dict[int, str] = {}
-    bit_widths: dict[int, int] = {}
-    byte_parent_counts: Counter[int] = Counter()
-
-    for expr_id, symbolic_expression in slice_expressions.items():
-        ast = symbolic_expression.getAst()
-        ast_text = str(ast)
-        texts[expr_id] = ast_text
-        bit_widths[expr_id] = ast.getBitvectorSize()
-
-        # 只统计输出字节节点对上游表达式的直接引用。
-        if bit_widths[expr_id] == 8:
-            for ref_id in extract_reference_ids(ast_text):
-                byte_parent_counts[ref_id] += 1
-
-    # 纯移位不算算法核心，必须至少出现一次真正的语义操作。
-    core_tokens = (
-        "bvxor",
-        "bvadd",
-        "bvmul",
-        "bvrol",
-        "bvror",
-        "bswap",
-        "rotate_left",
-        "rotate_right",
-    )
-    scoring_tokens = core_tokens + (
-        "bvshl",
-        "bvlshr",
-        "bvashr",
-    )
-
-    ranked_candidates: list[tuple[int, int, object]] = []
-    for expr_id, symbolic_expression in slice_expressions.items():
-        bit_width = bit_widths[expr_id]
-        if bit_width not in (32, 64):
-            continue
-
-        ast_text = texts[expr_id].lower()
-        if not any(token in ast_text for token in core_tokens):
-            continue
-
-        # 纯打包壳会出现很多 extract / concat，但并不代表算法本体。
-        if ast_text.count("concat") > 4 and ast_text.count("extract") > 4 and not any(
-            token in ast_text for token in ("bvxor", "bvadd", "bvmul", "rotate_left", "rotate_right", "bswap")
-        ):
-            continue
-
-        op_hits = sum(ast_text.count(token) for token in scoring_tokens)
-        penalty = 3 * ast_text.count("concat") + 2 * ast_text.count("extract") + ast_text.count("ref!")
-        score = byte_parent_counts[expr_id] * 100 + op_hits * 30 - penalty
-        ranked_candidates.append((score, expr_id, symbolic_expression))
-
-    if not ranked_candidates:
-        # 没找到明显的核心表达式时，就退回切片根，至少不会静默失败。
-        return None
-
-    ranked_candidates.sort(reverse=True)
-    return ranked_candidates[0][2]
 
 
 def recover_formulas(
@@ -160,11 +75,9 @@ def recover_formulas(
     if len(result_bytes) != taint_report.result_sizes[result_name]:
         raise RuntimeError("返回值字节长度与第一遍记录不一致")
 
-    algorithm_expression = select_algorithm_expression(actual_slice)
-    if algorithm_expression is None:
-        raise RuntimeError("没有找到可导出的算法核心表达式")
-
-    algorithm = build_recovered_algorithm(ctx, result_name, algorithm_expression.getAst())
+    # 这里不再从切片里挑“看起来像核心”的子表达式。
+    # 直接以最终返回值表达式为导出根，才能保住参数和返回值之间的真实关系。
+    algorithm = build_recovered_algorithm(ctx, result_name, result_expression.getAst())
 
     formulas: list[FormulaResult] = []
     # 返回值按字节恢复，这样和程序输出、trace 结果、二进制结果都能逐字节对齐。

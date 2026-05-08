@@ -1,9 +1,9 @@
 """算法导出。
 
-这一层不参与污点分析，也不参与符号回放，只把 Triton 已经恢复出来的表达式转换成三种文本：
-1. 简化后的 AST，保留严格语义，适合做精确检查。
-2. LLVM IR，展示 Triton 的抬升结果和 LLVM 优化后的中间表示。
-3. 人能读懂的算法，直接把 AST 渲染成表达式树，避免 LLVM 线性化后过度膨胀。
+这一层不参与污点分析，也不参与符号回放，只把 Triton 已经恢复出来的返回值表达式转换成三种文本：
+1. 结构化 AST，保留原始 SSA / 引用层级，便于检查是否被过早展开。
+2. LLVM IR，直接由 Triton 抬升成参数化函数，作为可复用的算法中间表示。
+3. 伪代码，把同一棵 AST 渲染成更接近源码的表达式，方便人工阅读。
 
 这里不尝试做完整反编译，因为 Triton 本身提供的是 AST / LLVM IR / solver 语义，而不是源码级恢复器。
 """
@@ -116,7 +116,12 @@ def _render_symbolic_alias(token: str, input_names: tuple[str, ...]) -> str:
     return alias_map.get(token, token)
 
 
-def _render_ast_node(ctx: TritonContext, node, input_names: tuple[str, ...]) -> str:
+def _render_ast_node(
+    ctx: TritonContext,
+    node,
+    input_names: tuple[str, ...],
+    expand_references: bool,
+) -> str:
     """把 AST 递归渲染成人类可读的表达式。"""
     node_type = _ast_type_name(node)
 
@@ -128,21 +133,23 @@ def _render_ast_node(ctx: TritonContext, node, input_names: tuple[str, ...]) -> 
         return _render_symbolic_alias(symbol_name, input_names)
 
     if node_type == "REFERENCE":
-        # 引用节点直接展开对应的符号表达式，这样导出的结果还是一棵表达式树。
         symbolic_expression = node.getSymbolicExpression()
-        return _render_ast_node(ctx, symbolic_expression.getAst(), input_names)
+        if not expand_references:
+            return f"ref!{symbolic_expression.getId()}"
+        # 只有在确实需要展开时，才把引用递归展开为完整表达式。
+        return _render_ast_node(ctx, symbolic_expression.getAst(), input_names, expand_references)
 
     children = node.getChildren()
 
     if node_type == "BSWAP" and len(children) == 1:
-        return f"bswap{node.getBitvectorSize()}({_render_ast_node(ctx, children[0], input_names)})"
+        return f"bswap{node.getBitvectorSize()}({_render_ast_node(ctx, children[0], input_names, expand_references)})"
 
     if node_type in {"BVROL", "BVROR"} and len(children) == 2:
         op_name = "rotl" if node_type == "BVROL" else "rotr"
         return (
             f"{op_name}{node.getBitvectorSize()}("
-            f"{_render_ast_node(ctx, children[0], input_names)}, "
-            f"{_render_ast_node(ctx, children[1], input_names)})"
+            f"{_render_ast_node(ctx, children[0], input_names, expand_references)}, "
+            f"{_render_ast_node(ctx, children[1], input_names, expand_references)})"
         )
 
     binary_ops = {
@@ -160,8 +167,8 @@ def _render_ast_node(ctx: TritonContext, node, input_names: tuple[str, ...]) -> 
         "LXOR": "^^",
     }
     if node_type in binary_ops and len(children) == 2:
-        left = _render_ast_node(ctx, children[0], input_names)
-        right = _render_ast_node(ctx, children[1], input_names)
+        left = _render_ast_node(ctx, children[0], input_names, expand_references)
+        right = _render_ast_node(ctx, children[1], input_names, expand_references)
         operator = binary_ops[node_type]
         if operator == ">>_s":
             return f"({left} >>_s {right})"
@@ -173,7 +180,7 @@ def _render_ast_node(ctx: TritonContext, node, input_names: tuple[str, ...]) -> 
         "LNOT": "!",
     }
     if node_type in unary_ops and len(children) == 1:
-        operand = _render_ast_node(ctx, children[0], input_names)
+        operand = _render_ast_node(ctx, children[0], input_names, expand_references)
         return f"({unary_ops[node_type]}{operand})"
 
     comparison_ops = {
@@ -189,17 +196,23 @@ def _render_ast_node(ctx: TritonContext, node, input_names: tuple[str, ...]) -> 
         "BVSLE": "<=",
     }
     if node_type in comparison_ops and len(children) == 2:
-        left = _render_ast_node(ctx, children[0], input_names)
-        right = _render_ast_node(ctx, children[1], input_names)
+        left = _render_ast_node(ctx, children[0], input_names, expand_references)
+        right = _render_ast_node(ctx, children[1], input_names, expand_references)
         return f"({left} {comparison_ops[node_type]} {right})"
 
     if node_type == "CONCAT" and children:
-        rendered_children = ", ".join(_render_ast_node(ctx, child, input_names) for child in children)
+        rendered_children = ", ".join(
+            _render_ast_node(ctx, child, input_names, expand_references) for child in children
+        )
         return f"concat({rendered_children})"
 
     if node_type in {"ZX", "SX"} and children:
         rendered_children = [child for child in children if _ast_type_name(child) != "INTEGER"]
-        operand = _render_ast_node(ctx, rendered_children[0], input_names) if rendered_children else _render_unknown_ast(ctx, node)
+        operand = (
+            _render_ast_node(ctx, rendered_children[0], input_names, expand_references)
+            if rendered_children
+            else _render_unknown_ast(ctx, node)
+        )
         prefix = "zext" if node_type == "ZX" else "sext"
         return f"{prefix}{node.getBitvectorSize()}({operand})"
 
@@ -208,15 +221,17 @@ def _render_ast_node(ctx: TritonContext, node, input_names: tuple[str, ...]) -> 
         value_children = [child for child in children if _ast_type_name(child) != "INTEGER"]
         if len(integer_children) >= 2 and len(value_children) == 1:
             bounds = sorted(child.getInteger() for child in integer_children[:2])
-            value = _render_ast_node(ctx, value_children[0], input_names)
+            value = _render_ast_node(ctx, value_children[0], input_names, expand_references)
             return f"{value}[{bounds[1]}:{bounds[0]}]"
-        rendered_children = ", ".join(_render_ast_node(ctx, child, input_names) for child in children)
+        rendered_children = ", ".join(
+            _render_ast_node(ctx, child, input_names, expand_references) for child in children
+        )
         return f"extract({rendered_children})"
 
     if node_type == "ITE" and len(children) == 3:
-        condition = _render_ast_node(ctx, children[0], input_names)
-        true_branch = _render_ast_node(ctx, children[1], input_names)
-        false_branch = _render_ast_node(ctx, children[2], input_names)
+        condition = _render_ast_node(ctx, children[0], input_names, expand_references)
+        true_branch = _render_ast_node(ctx, children[1], input_names, expand_references)
+        false_branch = _render_ast_node(ctx, children[2], input_names, expand_references)
         return f"({condition} ? {true_branch} : {false_branch})"
 
     # 对于当前样本以外的 AST 形态，不静默丢语义，直接退回 Triton 自带表示。
@@ -225,7 +240,9 @@ def _render_ast_node(ctx: TritonContext, node, input_names: tuple[str, ...]) -> 
 
 def render_human_readable_algorithm(ctx: TritonContext, ast_node, input_names: tuple[str, ...]) -> str:
     """把恢复出的 AST 渲染成可读算法。"""
-    rendered_expression = _normalize_rotation_call(_render_ast_node(ctx, ast_node, input_names))
+    rendered_expression = _normalize_rotation_call(
+        _render_ast_node(ctx, ast_node, input_names, expand_references=False)
+    )
     result_bits = ast_node.getBitvectorSize()
     result_prefix = f"u{result_bits}" if result_bits > 1 else "u1"
     header = f"// 输入: {', '.join(input_names)}"
@@ -245,13 +262,14 @@ def build_recovered_algorithm(
     input_names: tuple[str, ...] = ("plaintext", "key"),
 ) -> RecoveredAlgorithm:
     """把同一个结果表达式导出成三种形式。"""
-    # 这里只做求解器级简化，不走 LLVM 级别的重写。
-    # LLVM 会把很多高层运算打散成位级 extract / concat，反而不利于导出人能看懂的算法。
-    simplified_ast_node = ctx.simplify(ast_node, True, False)
+    # 这里只做结构保持，不启用求解器级展开。
+    # 过早调用 solver 简化会把原始 SSA / 引用层级炸成大表达式，反而不利于后续导出。
+    simplified_ast_node = ctx.simplify(ast_node, False, False)
     simplified_ast_text = render_simplified_ast_text(ctx, simplified_ast_node)
     llvm_function_name = f"recover_{result_name}".replace(":", "_")
-    llvm_ir = render_llvm_ir(ctx, simplified_ast_node, llvm_function_name, True)
-    # 人类可读算法直接从原始恢复 AST 渲染，保留高层语义，避免被简化器压成位级碎片。
+    # LLVM 这层直接抬升原始返回值表达式，让参数从符号变量里自然保留下来。
+    llvm_ir = render_llvm_ir(ctx, ast_node, llvm_function_name, False)
+    # 伪代码和 LLVM IR 必须来自同一棵表达式树，否则会出现“一个是常量、一个是变量”的错位。
     human_readable_text = render_human_readable_algorithm(ctx, ast_node, input_names)
     return RecoveredAlgorithm(
         result_name=result_name,
