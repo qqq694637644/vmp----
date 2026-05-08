@@ -8,6 +8,7 @@ from .analysis import run_taint_analysis
 from .pipeline import build_config_from_trace
 from .snapshot import get_minimal_snapshot_items
 from .symbolic import recover_formulas
+from .triton_runtime import ReplayStateMismatch
 
 
 def format_hex(value: int) -> str:
@@ -65,7 +66,11 @@ def main() -> int:
     for item in get_minimal_snapshot_items():
         print(f"  - {item}")
 
-    _entry_address, _function_size, taint_report = run_taint_analysis(trace_path, config)
+    try:
+        _entry_address, _function_size, taint_report = run_taint_analysis(trace_path, config)
+    except ReplayStateMismatch as exc:
+        print(f"第一处状态分歧: {exc}")
+        return 1
     print("第一遍：动态污点分析")
     print(f"  污点步骤数: {len(taint_report.tainted_steps)}")
     print("  关键指令:")

@@ -58,6 +58,7 @@ class AnalysisHelperTest(unittest.TestCase):
                 "参数：RSP=0x0000000000000008，RCX=0x0000000000000003，RDX=0x0000000000000004，plaintext=31 32 33 34，key=61 62 63 64",
                 "返回值：RAX=0x0000000000000007，bytes=07 00 00 00",
                 "步骤 000001 | RIP=0x000000014000FE80 | 字节=90",
+                "步骤状态：RIP=0x000000014000FE80，RAX=0x0000000000000001，RBX=0x0000000000000002，RCX=0x0000000000000003，RDX=0x0000000000000004，RSI=0x0000000000000005，RDI=0x0000000000000006，RBP=0x0000000000000007，RSP=0x0000000000000008，R8=0x0000000000000009，R9=0x000000000000000A，R10=0x000000000000000B，R11=0x000000000000000C，R12=0x000000000000000D，R13=0x000000000000000E，R14=0x000000000000000F，R15=0x0000000000000010，EFLAGS=0x0000000000000002，CS=0x0000000000000033，DS=0x000000000000002B，ES=0x000000000000002B，FS=0x0000000000000053，GS=0x000000000000002B，SS=0x000000000000002B",
                 "已离开 XorTransform，步骤数=1",
             ]
         )
@@ -76,6 +77,9 @@ class AnalysisHelperTest(unittest.TestCase):
         self.assertEqual(trace.entry_memory_snapshots[0].bytes, bytes.fromhex("11 22 33 44"))
         self.assertEqual(trace.entry_memory_snapshots[1].base, 0x4000)
         self.assertEqual(trace.entry_memory_snapshots[1].bytes, bytes.fromhex("55 66"))
+        self.assertIsNotNone(trace.steps[0].state)
+        self.assertEqual(trace.steps[0].state.rip, 0x000000014000FE80)
+        self.assertEqual(trace.steps[0].state.rax, 0x1)
         self.assertEqual(len(trace.extra_memory_snapshots), 1)
         self.assertEqual(trace.extra_memory_snapshots[0].base, 0x3000)
         self.assertEqual(trace.extra_memory_snapshots[0].bytes, bytes.fromhex("11 22 33 44"))

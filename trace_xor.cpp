@@ -112,6 +112,35 @@ void PrintEntryRegisters(const CONTEXT &context)
         u8"，SS=" + ToHex64(context.SegSs));
 }
 
+void PrintStepState(const CONTEXT &context)
+{
+    PrintLine(
+        std::string(u8"步骤状态：RIP=") + ToHex64(context.Rip) +
+        u8"，RAX=" + ToHex64(context.Rax) +
+        u8"，RBX=" + ToHex64(context.Rbx) +
+        u8"，RCX=" + ToHex64(context.Rcx) +
+        u8"，RDX=" + ToHex64(context.Rdx) +
+        u8"，RSI=" + ToHex64(context.Rsi) +
+        u8"，RDI=" + ToHex64(context.Rdi) +
+        u8"，RBP=" + ToHex64(context.Rbp) +
+        u8"，RSP=" + ToHex64(context.Rsp) +
+        u8"，R8=" + ToHex64(context.R8) +
+        u8"，R9=" + ToHex64(context.R9) +
+        u8"，R10=" + ToHex64(context.R10) +
+        u8"，R11=" + ToHex64(context.R11) +
+        u8"，R12=" + ToHex64(context.R12) +
+        u8"，R13=" + ToHex64(context.R13) +
+        u8"，R14=" + ToHex64(context.R14) +
+        u8"，R15=" + ToHex64(context.R15) +
+        u8"，EFLAGS=" + ToHex64(context.EFlags) +
+        u8"，CS=" + ToHex64(context.SegCs) +
+        u8"，DS=" + ToHex64(context.SegDs) +
+        u8"，ES=" + ToHex64(context.SegEs) +
+        u8"，FS=" + ToHex64(context.SegFs) +
+        u8"，GS=" + ToHex64(context.SegGs) +
+        u8"，SS=" + ToHex64(context.SegSs));
+}
+
 CapturedThreadContext AcquireThreadContext(HANDLE thread)
 {
     constexpr DWORD kContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_FLOATING_POINT | CONTEXT_XSTATE;
@@ -697,6 +726,7 @@ void StartTrace(TraceState &state)
         u8"，plaintext=" + BytesToHex(DwordToBytes(state.plaintextValue).data(), 4) +
         u8"，key=" + BytesToHex(DwordToBytes(state.keyValue).data(), 4));
     LogInstruction(state, state.entryBreakpoint.address);
+    PrintStepState(context);
 }
 
 void HandleSingleStep(TraceState &state)
@@ -716,6 +746,7 @@ void HandleSingleStep(TraceState &state)
 
     ++state.stepIndex;
     LogInstruction(state, context.Rip);
+    PrintStepState(context);
 
     context.EFlags |= kTrapFlag;
     if (SetXStateFeaturesMask(threadContext.context, threadContext.xstateMask) == 0)

@@ -10,6 +10,35 @@ class TraceStep:
     address: int
     opcode: bytes
     line_number: int | None
+    state: "ConcreteRegisterSnapshot | None" = None
+
+
+@dataclass(frozen=True)
+class ConcreteRegisterSnapshot:
+    rip: int
+    rax: int
+    rbx: int
+    rcx: int
+    rdx: int
+    rsi: int
+    rdi: int
+    rbp: int
+    rsp: int
+    r8: int
+    r9: int
+    r10: int
+    r11: int
+    r12: int
+    r13: int
+    r14: int
+    r15: int
+    eflags: int
+    cs: int
+    ds: int
+    es: int
+    fs: int
+    gs: int
+    ss: int
 
 
 @dataclass(frozen=True)

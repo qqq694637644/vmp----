@@ -14,6 +14,50 @@ def make_register(ctx: TritonContext, reg_const: int):
     return ctx.getRegister(reg_const)
 
 
+class ReplayStateMismatch(RuntimeError):
+    def __init__(self, message: str):
+        super().__init__(message)
+
+
+def compare_register_snapshot(ctx: TritonContext, step: TraceStep) -> None:
+    if step.state is None:
+        raise ValueError(f"步骤 {step.index} 缺少状态快照，无法做分歧比较")
+
+    expected = step.state
+    comparisons: tuple[tuple[str, int, int], ...] = (
+        ("RIP", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.RIP), False), expected.rip),
+        ("RAX", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.RAX), False), expected.rax),
+        ("RBX", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.RBX), False), expected.rbx),
+        ("RCX", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.RCX), False), expected.rcx),
+        ("RDX", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.RDX), False), expected.rdx),
+        ("RSI", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.RSI), False), expected.rsi),
+        ("RDI", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.RDI), False), expected.rdi),
+        ("RBP", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.RBP), False), expected.rbp),
+        ("RSP", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.RSP), False), expected.rsp),
+        ("R8", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.R8), False), expected.r8),
+        ("R9", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.R9), False), expected.r9),
+        ("R10", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.R10), False), expected.r10),
+        ("R11", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.R11), False), expected.r11),
+        ("R12", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.R12), False), expected.r12),
+        ("R13", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.R13), False), expected.r13),
+        ("R14", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.R14), False), expected.r14),
+        ("R15", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.R15), False), expected.r15),
+        ("EFLAGS", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.EFLAGS), False), expected.eflags),
+        ("CS", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.CS), False), expected.cs),
+        ("DS", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.DS), False), expected.ds),
+        ("ES", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.ES), False), expected.es),
+        ("FS", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.FS), False), expected.fs),
+        ("GS", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.GS), False), expected.gs),
+        ("SS", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.SS), False), expected.ss),
+    )
+
+    for name, actual, expected_value in comparisons:
+        if actual != expected_value:
+            raise ReplayStateMismatch(
+                f"step={step.index} rip={step.address:#x} register={name} 期望={expected_value:#x} 实际={actual:#x}"
+            )
+
+
 def zero_general_registers(ctx: TritonContext) -> None:
     # 只保留我们手工布置的参数和栈状态，其余寄存器全部清零。
     for reg_const in (
@@ -152,8 +196,16 @@ def initialize_context(config: RecoveryConfig) -> TritonContext:
     return ctx
 
 
-def replay_trace(ctx: TritonContext, steps: tuple[TraceStep, ...], observer: StepObserver | None = None) -> None:
+def replay_trace(
+    ctx: TritonContext,
+    steps: tuple[TraceStep, ...],
+    observer: StepObserver | None = None,
+    state_validator: Callable[[TritonContext, TraceStep], None] | None = None,
+) -> None:
     for step in steps:
+        if state_validator is not None:
+            state_validator(ctx, step)
+
         instruction = Instruction()
         instruction.setAddress(step.address)
         instruction.setOpcode(step.opcode)

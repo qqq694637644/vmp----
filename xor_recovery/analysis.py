@@ -6,7 +6,7 @@ from triton import CALLBACK, REG, TritonContext
 
 from .models import DependencyNode, MemoryRegion, RecoveryConfig, TaintAnalysisResult, TraceStep
 from .trace_io import parse_trace
-from .triton_runtime import initialize_context, replay_trace
+from .triton_runtime import compare_register_snapshot, initialize_context, replay_trace
 
 
 REF_RE = re.compile(r"ref!(\d+)")
@@ -181,7 +181,7 @@ def run_taint_analysis(trace_path, config: RecoveryConfig) -> tuple[int, int, Ta
                 ast=str(symbolic_expression.getAst()),
             )
 
-    replay_trace(ctx, steps, observer)
+    replay_trace(ctx, steps, observer, state_validator=compare_register_snapshot)
 
     result_register = ctx.getRegister(REG.X86_64.RAX)
     result_expression = ctx.getSymbolicRegister(result_register)

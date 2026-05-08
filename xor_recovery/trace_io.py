@@ -4,7 +4,15 @@ import re
 import struct
 from pathlib import Path
 
-from .models import EntryArguments, EntryRegisters, EntryVectorState, MemorySnapshot, TraceMetadata, TraceStep
+from .models import (
+    ConcreteRegisterSnapshot,
+    EntryArguments,
+    EntryRegisters,
+    EntryVectorState,
+    MemorySnapshot,
+    TraceMetadata,
+    TraceStep,
+)
 
 
 ENTRY_RE = re.compile(r"已定位 XorTransform，地址=(0x[0-9A-Fa-f]+)(?:，RVA=(0x[0-9A-Fa-f]+))?，大小=(\d+)")
@@ -29,11 +37,83 @@ RESULT_RE = re.compile(r"^返回值：RAX=(0x[0-9A-Fa-f]+)，bytes=([0-9A-Fa-f ]
 STEP_RE = re.compile(
     r"^步骤\s+(\d+)\s+\|\s+RIP=(0x[0-9A-Fa-f]+)\s+\|\s+字节=([0-9A-Fa-f ]+)(?:\s+\|\s+行号=(\d+))?$"
 )
+STEP_STATE_PREFIX = "步骤状态："
 EXIT_RE = re.compile(r"已离开 XorTransform，步骤数=(\d+)")
 
 
 def parse_hex_bytes(text: str) -> bytes:
     return bytes.fromhex(text.replace(" ", ""))
+
+
+def parse_step_register_snapshot(raw_line: str) -> ConcreteRegisterSnapshot:
+    if not raw_line.startswith(STEP_STATE_PREFIX):
+        raise ValueError("步骤状态行格式不正确")
+
+    payload = raw_line.removeprefix(STEP_STATE_PREFIX)
+    items = payload.split("，")
+    expected_names = (
+        "RIP",
+        "RAX",
+        "RBX",
+        "RCX",
+        "RDX",
+        "RSI",
+        "RDI",
+        "RBP",
+        "RSP",
+        "R8",
+        "R9",
+        "R10",
+        "R11",
+        "R12",
+        "R13",
+        "R14",
+        "R15",
+        "EFLAGS",
+        "CS",
+        "DS",
+        "ES",
+        "FS",
+        "GS",
+        "SS",
+    )
+    if len(items) != len(expected_names):
+        raise ValueError("步骤状态寄存器数量不正确")
+
+    values: dict[str, int] = {}
+    for index, item in enumerate(items):
+        name, value = item.split("=", 1)
+        expected_name = expected_names[index]
+        if name != expected_name:
+            raise ValueError(f"步骤状态寄存器顺序错误: 期望 {expected_name}，实际 {name}")
+        values[name.lower()] = int(value, 16)
+
+    return ConcreteRegisterSnapshot(
+        rip=values["rip"],
+        rax=values["rax"],
+        rbx=values["rbx"],
+        rcx=values["rcx"],
+        rdx=values["rdx"],
+        rsi=values["rsi"],
+        rdi=values["rdi"],
+        rbp=values["rbp"],
+        rsp=values["rsp"],
+        r8=values["r8"],
+        r9=values["r9"],
+        r10=values["r10"],
+        r11=values["r11"],
+        r12=values["r12"],
+        r13=values["r13"],
+        r14=values["r14"],
+        r15=values["r15"],
+        eflags=values["eflags"],
+        cs=values["cs"],
+        ds=values["ds"],
+        es=values["es"],
+        fs=values["fs"],
+        gs=values["gs"],
+        ss=values["ss"],
+    )
 
 
 def load_entry_memory_snapshots(snapshot_path: Path) -> tuple[MemorySnapshot, ...]:
@@ -92,6 +172,7 @@ def parse_trace(trace_path: Path) -> TraceMetadata:
     mxcsr_mask: int | None = None
     xmm_registers: tuple[bytes, ...] | None = None
     ymm_high_registers: tuple[bytes, ...] | None = None
+    pending_step: TraceStep | None = None
 
     for raw_line in trace_path.read_text(encoding="utf-8").splitlines():
         entry_match = ENTRY_RE.search(raw_line)
@@ -231,17 +312,35 @@ def parse_trace(trace_path: Path) -> TraceMetadata:
 
         step_match = STEP_RE.match(raw_line)
         if step_match is not None:
-            steps.append(
-                TraceStep(
-                    index=int(step_match.group(1)),
-                    address=int(step_match.group(2), 16),
-                    opcode=parse_hex_bytes(step_match.group(3)),
-                    line_number=int(step_match.group(4)) if step_match.group(4) is not None else None,
-                )
+            if pending_step is not None:
+                raise ValueError("步骤状态缺失，上一条步骤没有对应的状态快照")
+
+            pending_step = TraceStep(
+                index=int(step_match.group(1)),
+                address=int(step_match.group(2), 16),
+                opcode=parse_hex_bytes(step_match.group(3)),
+                line_number=int(step_match.group(4)) if step_match.group(4) is not None else None,
             )
             continue
 
+        if raw_line.startswith(STEP_STATE_PREFIX):
+            if pending_step is None:
+                raise ValueError("步骤状态出现时没有对应的步骤记录")
+            steps.append(
+                TraceStep(
+                    index=pending_step.index,
+                    address=pending_step.address,
+                    opcode=pending_step.opcode,
+                    line_number=pending_step.line_number,
+                    state=parse_step_register_snapshot(raw_line),
+                )
+            )
+            pending_step = None
+            continue
+
         if EXIT_RE.search(raw_line) is not None:
+            if pending_step is not None:
+                raise ValueError("步骤状态缺失，日志在退出前未完成最后一条步骤")
             break
 
     if entry_address == 0 or function_size == 0:
@@ -266,6 +365,8 @@ def parse_trace(trace_path: Path) -> TraceMetadata:
         raise ValueError("轨迹里没有找到 XorTransform 栈快照")
     if not steps:
         raise ValueError("轨迹里没有找到可重放的步骤")
+    if pending_step is not None:
+        raise ValueError("步骤状态缺失，日志结尾前未完成最后一条步骤")
 
     entry_memory_snapshots = load_entry_memory_snapshots(entry_memory_snapshot_file)
     if entry_memory_snapshot_count is not None and len(entry_memory_snapshots) != entry_memory_snapshot_count:
