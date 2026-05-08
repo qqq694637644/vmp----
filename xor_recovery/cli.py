@@ -122,14 +122,16 @@ def print_taint_report(taint_report: TaintAnalysisResult) -> None:
 def print_algorithm_report(algorithm: RecoveredAlgorithm) -> None:
     """输出整体算法的三种导出结果。
 
-    这里不把巨长的 AST / LLVM IR 全部直接铺到终端，只打印长度和人类可读算法本体。
-    完整文本已经放在 `RecoveryResult.algorithm` 里，便于后续保存或二次处理。
+    这里直接把 Triton 导出的 LLVM IR 和伪代码打印出来。
+    它们是恢复结果的主产物，不再只打印长度。
     """
     print("整体算法导出")
     print(f"  结果根: {algorithm.result_name}")
     print(f"  简化 AST: 已生成，字符数={len(algorithm.simplified_ast_text)}")
-    print(f"  LLVM IR : 已生成，字符数={len(algorithm.llvm_ir)}")
-    print("  人类可读算法:")
+    print("  LLVM IR:")
+    for line in algorithm.llvm_ir.splitlines():
+        print(f"    {line}")
+    print("  伪代码:")
     for line in algorithm.human_readable_text.splitlines():
         print(f"    {line}")
 

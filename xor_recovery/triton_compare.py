@@ -14,6 +14,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from xor_recovery.models import RecoveryResult
+
 from .pipeline import build_config_from_trace, recover
 from .trace_io import parse_trace
 from .verification import BinaryConsistencyReport, verify_binary_consistency
@@ -116,7 +118,7 @@ def compare_vector_against_binaries(
         raise RuntimeError(f"trace 缺少入口参数: {trace_path}")
 
     config = build_config_from_trace(trace_metadata)
-    recovery = recover(trace_path, config)
+    recovery: RecoveryResult = recover(trace_path, config)
     verification = verify_binary_consistency(
         binary_dir,
         vector.plaintext,
