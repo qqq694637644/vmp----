@@ -1,3 +1,9 @@
+"""trace 日志解析器。
+
+这里负责把 tracer 输出的纯文本日志转成结构化数据。
+日志格式是固定协议，所以解析逻辑采取“严格失败”的策略：少一个字段、顺序错一项、快照长度不对，都直接报错。
+"""
+
 from __future__ import annotations
 
 import re
@@ -42,10 +48,15 @@ EXIT_RE = re.compile(r"已离开 XorTransform，步骤数=(\d+)")
 
 
 def parse_hex_bytes(text: str) -> bytes:
+    """把日志里用空格分隔的十六进制字节串转成原始 bytes。"""
     return bytes.fromhex(text.replace(" ", ""))
 
 
 def parse_step_register_snapshot(raw_line: str) -> ConcreteRegisterSnapshot:
+    """解析每一步的寄存器状态快照。
+
+    tracer 输出的字段顺序是固定的，这里必须按顺序校验，不能靠名字随便拼。
+    """
     if not raw_line.startswith(STEP_STATE_PREFIX):
         raise ValueError("步骤状态行格式不正确")
 
@@ -117,6 +128,13 @@ def parse_step_register_snapshot(raw_line: str) -> ConcreteRegisterSnapshot:
 
 
 def load_entry_memory_snapshots(snapshot_path: Path) -> tuple[MemorySnapshot, ...]:
+    """读取入口全量快照文件。
+
+    文件格式是二进制协议：
+    - 4 字节 magic: VMSN
+    - 4 字节版本号
+    - 后面重复写入 (base, size, payload)
+    """
     raw = snapshot_path.read_bytes()
     if len(raw) < 8:
         raise ValueError(f"入口全量快照文件过短: {snapshot_path}")
@@ -150,6 +168,13 @@ def load_entry_memory_snapshots(snapshot_path: Path) -> tuple[MemorySnapshot, ..
 
 
 def parse_trace(trace_path: Path) -> TraceMetadata:
+    """把 tracer 文本日志解析成 TraceMetadata。
+
+    这一步是整个恢复链的输入入口，必须尽量严格：
+    - 基础快照缺字段就直接报错
+    - 步骤和步骤状态必须一一对应
+    - 入口全量快照文件必须能被成功读取
+    """
     entry_address = 0
     function_size = 0
     steps: list[TraceStep] = []
@@ -174,6 +199,7 @@ def parse_trace(trace_path: Path) -> TraceMetadata:
     ymm_high_registers: tuple[bytes, ...] | None = None
     pending_step: TraceStep | None = None
 
+    # 第一阶段：按行扫描 trace 文本，把各类元数据拆出来。
     for raw_line in trace_path.read_text(encoding="utf-8").splitlines():
         entry_match = ENTRY_RE.search(raw_line)
         if entry_match is not None:
@@ -225,6 +251,7 @@ def parse_trace(trace_path: Path) -> TraceMetadata:
             if mxcsr is None or mxcsr_mask is None:
                 raise ValueError("XMM 寄存器快照先于浮点状态出现，日志格式不正确")
 
+            # 向量状态必须和 MXCSR 一起恢复，否则 SIMD 语义可能不一致。
             vector_payload = raw_line.removeprefix(XMM_PREFIX)
             xmm_items = vector_payload.split("，")
             if len(xmm_items) != 16:
@@ -245,6 +272,7 @@ def parse_trace(trace_path: Path) -> TraceMetadata:
             if mxcsr is None or mxcsr_mask is None:
                 raise ValueError("YMM 高位快照先于浮点状态出现，日志格式不正确")
 
+            # YMM 高位只在需要时恢复；这里同样要求数量和顺序完全一致。
             vector_payload = raw_line.removeprefix(YMM_PREFIX)
             ymm_items = vector_payload.split("，")
             if len(ymm_items) != 16:
@@ -315,6 +343,7 @@ def parse_trace(trace_path: Path) -> TraceMetadata:
             if pending_step is not None:
                 raise ValueError("步骤状态缺失，上一条步骤没有对应的状态快照")
 
+            # 步骤行和步骤状态行必须成对出现。
             pending_step = TraceStep(
                 index=int(step_match.group(1)),
                 address=int(step_match.group(2), 16),
@@ -326,6 +355,8 @@ def parse_trace(trace_path: Path) -> TraceMetadata:
         if raw_line.startswith(STEP_STATE_PREFIX):
             if pending_step is None:
                 raise ValueError("步骤状态出现时没有对应的步骤记录")
+
+            # 这里把刚读到的步骤和状态拼成一个完整 TraceStep。
             steps.append(
                 TraceStep(
                     index=pending_step.index,
@@ -343,6 +374,7 @@ def parse_trace(trace_path: Path) -> TraceMetadata:
                 raise ValueError("步骤状态缺失，日志在退出前未完成最后一条步骤")
             break
 
+    # 第二阶段：收尾校验，任何缺字段都说明这份 trace 不能用于回放。
     if entry_address == 0 or function_size == 0:
         raise ValueError("轨迹里没有找到 XorTransform 入口信息")
     if entry_arguments is None:

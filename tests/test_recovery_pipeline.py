@@ -1,3 +1,10 @@
+"""恢复链的端到端回归测试。
+
+这个测试不是在重复实现算法，而是在验证两件事：
+1. 第一遍污点分析和第二遍符号执行能否在受保护样本上跑通。
+2. 恢复出来的公式是否能和未保护 / 受保护二进制的真实输出一致。
+"""
+
 from __future__ import annotations
 
 import unittest
@@ -24,6 +31,7 @@ def bswap32(value: int) -> int:
 
 
 def reference_transform(plaintext: int, key: int) -> int:
+    # 这里的 Python 参考实现必须和 encrypt_demo.cpp 完全一致，用来验证符号恢复出来的公式。
     step1 = (plaintext + 0x13579BDF) & 0xFFFFFFFF
     step2 = rotl32(key ^ 0x2468ACE0, 7)
     step3 = bswap32(step1 ^ step2)
@@ -37,6 +45,7 @@ def reference_transform(plaintext: int, key: int) -> int:
 class RecoveryPipelineTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        # 回归测试依赖已经生成好的二进制和 trace，缺一个就直接失败，避免伪通过。
         for required_path in (
             BUILD_DIR / "trace_protected_full.log",
             BUILD_DIR / "encrypt_demo.exe",

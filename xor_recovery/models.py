@@ -1,3 +1,9 @@
+"""恢复链使用的数据模型。
+
+这些 dataclass 只负责承载数据，不放分析逻辑。
+trace 解析器负责填充它们，污点分析、符号恢复和最终校验分别消费它们。
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -154,6 +160,7 @@ class RecoveryConfig:
         return self.operand_size
 
     def tracked_regions(self) -> tuple[MemoryRegion, ...]:
+        # 这些区域主要用于把 raw 地址翻译成 stack / vm_context / extra_snapshot 之类的可读标签。
         regions = [MemoryRegion("stack", self.stack_base, self.stack_size)]
         seen = {(self.stack_base, self.stack_size)}
         if self.vm_context_region is not None:

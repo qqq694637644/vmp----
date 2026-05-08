@@ -1,4 +1,12 @@
+"""第二遍：符号执行和公式恢复。
+
+这一层只处理已经由第一遍筛出来的返回值切片，不再重新做全量污点分析。
+目标是把返回值对应的 AST 交给 Triton 自己简化，再逐字节验证它和真实结果一致。
+"""
+
 from __future__ import annotations
+
+from pathlib import Path
 
 from triton import REG, TritonContext
 
@@ -8,15 +16,26 @@ from .triton_runtime import initialize_context, replay_trace
 
 
 def render_formula(ctx: TritonContext, ast_node) -> object:
-    # 这里只做 Triton 的内置简化，不再自己写 AST 化简器。
+    """把 AST 交给 Triton 的内置简化器处理。
+
+    这里故意不再自己写一层 AST 递归简化，避免重复实现 Triton 已经提供的能力。
+    """
     return ctx.simplify(ast_node, True)
 
 
-def recover_formulas(trace_path, config: RecoveryConfig, taint_report: TaintAnalysisResult) -> tuple[int, int, tuple[FormulaResult, ...]]:
+def recover_formulas(trace_path: Path, config: RecoveryConfig, taint_report: TaintAnalysisResult) -> tuple[int, int, tuple[FormulaResult, ...]]:
+    """执行第二遍符号恢复。
+
+    前提是第一遍已经找到了返回根和对应切片，因此这里的工作重心是：
+    1. 重放同一条 trace。
+    2. 确认 RAX 还是同一个返回根。
+    3. 把每个返回字节的 AST 简化并和真实结果逐字节对拍。
+    """
     trace = parse_trace(trace_path)
     entry_address, function_size, steps = trace
     ctx = initialize_context(config)
     ast_ctx = ctx.getAstContext()
+    # 第二遍不再记录污点，只做符号回放和公式提取。
     replay_trace(ctx, steps)
 
     result_register = ctx.getRegister(REG.X86_64.RAX)
@@ -25,6 +44,7 @@ def recover_formulas(trace_path, config: RecoveryConfig, taint_report: TaintAnal
         raise RuntimeError("返回寄存器 RAX 没有符号表达式，无法恢复公式")
 
     result_name = "reg:rax"
+    # 第一遍记录的返回根和第二遍实际回放出来的返回根必须一致。
     root_expr_id = taint_report.result_roots.get(result_name)
     if root_expr_id is None:
         raise RuntimeError("第一遍没有记录返回根 reg:rax")
@@ -37,6 +57,7 @@ def recover_formulas(trace_path, config: RecoveryConfig, taint_report: TaintAnal
             f"未跑通到最终汇点: 期望 RAX={taint_report.result_value:#x}，重放得到 RAX={taint_report.replayed_result_value:#x}"
         )
 
+    # 第一遍算出的切片和第二遍实际回放出来的切片也必须完全一致。
     expected_slice = set(taint_report.result_slices[result_name])
     actual_slice = ctx.sliceExpressions(result_expression)
     actual_slice_ids = set(actual_slice.keys())
@@ -50,6 +71,7 @@ def recover_formulas(trace_path, config: RecoveryConfig, taint_report: TaintAnal
         raise RuntimeError("返回值字节长度与第一遍记录不一致")
 
     formulas: list[FormulaResult] = []
+    # 返回值按字节恢复，这样和程序输出、trace 结果、二进制结果都能逐字节对齐。
     for offset in range(taint_report.result_sizes[result_name]):
         byte_low = offset * 8
         byte_high = byte_low + 7

@@ -1,3 +1,13 @@
+"""最终一致性校验。
+
+这里不做符号推导，只负责把三种结果放到同一条验收线上：
+1. trace 里记录的真实返回值
+2. Triton 符号执行恢复出的公式值
+3. 未保护 / 受保护二进制自己跑出来的返回值
+
+只要有一项不一致，就说明恢复链没有真正闭环。
+"""
+
 from __future__ import annotations
 
 import re
@@ -31,6 +41,11 @@ class BinaryConsistencyReport:
 
 
 def parse_program_result(stdout: bytes) -> int:
+    """解析样本程序打印出来的 result 行。
+
+    程序输出的十六进制字符串是按字节打印的，因此这里要先把字节串解析出来，
+    再用 little-endian 还原成整数，避免把打印顺序误认为数值顺序。
+    """
     text = stdout.decode("utf-8", errors="ignore")
     for line in text.splitlines():
         match = PROGRAM_RESULT_RE.match(line.strip())
@@ -41,6 +56,7 @@ def parse_program_result(stdout: bytes) -> int:
 
 
 def run_program_result(binary_path: Path) -> int:
+    """运行目标二进制并提取它打印的结果值。"""
     if not binary_path.is_file():
         raise FileNotFoundError(f"找不到待验证程序: {binary_path}")
 
@@ -54,6 +70,10 @@ def run_program_result(binary_path: Path) -> int:
 
 
 def assemble_symbolic_result(formulas: tuple[FormulaResult, ...]) -> int:
+    """把按字节恢复出来的公式结果重新拼成完整整数。
+
+    这里必须按 byte_offset 排序，否则字节顺序一乱，最终值就会被拼错。
+    """
     if not formulas:
         raise ValueError("没有可汇总的符号公式")
 
@@ -74,6 +94,11 @@ def verify_binary_consistency(
     trace_result: int,
     formulas: tuple[FormulaResult, ...],
 ) -> BinaryConsistencyReport:
+    """最终验收入口。
+
+    先把公式结果拼成整数，再分别运行未保护和受保护二进制；
+    三者任何一个对不上，都直接抛异常暴露问题。
+    """
     unprotected_binary = binary_dir / "encrypt_demo.exe"
     protected_binary = binary_dir / "encrypt_demo.protected.exe"
 
