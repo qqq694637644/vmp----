@@ -4,7 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .pipeline import build_config, recover
+from .pipeline import build_config_from_trace, recover
 
 
 def format_hex(value: int) -> str:
@@ -23,12 +23,6 @@ def format_preview(values: tuple[str, ...], limit: int = 12) -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="从 VMP trace 中做两遍分析并还原算法公式。")
     parser.add_argument("trace_file", help="trace_xor.exe 的输出文件")
-    parser.add_argument("--plaintext", default="1234", help="明文输入，默认 1234")
-    parser.add_argument("--key", default="key!", help="密钥输入，默认 key!")
-    parser.add_argument("--stack-base", default="0x70000000")
-    parser.add_argument("--plaintext-base", default="0x10000000")
-    parser.add_argument("--key-base", default="0x10001000")
-    parser.add_argument("--output-base", default="0x10002000")
     parser.add_argument("--context-base", default=None)
     parser.add_argument("--context-size", default=None)
     return parser
@@ -51,25 +45,11 @@ def main() -> int:
     configure_utf8_console()
     args = build_parser().parse_args()
     trace_path = Path(args.trace_file)
-    plaintext = args.plaintext.encode("utf-8")
-    key = args.key.encode("utf-8")
-    if len(plaintext) != len(key):
-        raise ValueError("plaintext 和 key 的长度必须一致")
-
-    # 先解析 trace，再用入口信息计算返回地址，避免把魔数散落到各层里。
     from .trace_io import parse_trace
 
-    entry_address, function_size, _ = parse_trace(trace_path)
-    return_address = entry_address + function_size + 0x1000
-    config = build_config(
-        plaintext=plaintext,
-        key=key,
-        entry_address=entry_address,
-        stack_base=int(args.stack_base, 16),
-        plaintext_base=int(args.plaintext_base, 16),
-        key_base=int(args.key_base, 16),
-        output_base=int(args.output_base, 16),
-        return_address=return_address,
+    trace_metadata = parse_trace(trace_path)
+    config = build_config_from_trace(
+        trace_metadata,
         context_base=parse_hex(args.context_base),
         context_size=parse_hex(args.context_size),
     )

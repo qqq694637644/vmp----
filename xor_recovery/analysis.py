@@ -42,7 +42,10 @@ def is_input_origin_label(label: str) -> bool:
 
 
 def run_taint_analysis(trace_path, config: RecoveryConfig) -> tuple[int, int, TaintAnalysisResult]:
-    entry_address, function_size, steps = parse_trace(trace_path)
+    trace = parse_trace(trace_path)
+    entry_address, function_size, steps = trace
+    if trace.output_bytes is None:
+        raise RuntimeError("轨迹里没有可用于校验的输出字节")
     ctx = initialize_context(config)
     tracked_regions = config.tracked_regions()
 
@@ -51,7 +54,7 @@ def run_taint_analysis(trace_path, config: RecoveryConfig) -> tuple[int, int, Ta
     dependency_graph: dict[int, tuple[int, ...]] = {}
     expr_step_map: dict[int, int] = {}
     context_hits: set[str] = set()
-    sink_candidates: list[tuple[int, int, int, object, bool, int]] = []
+    sink_candidates: list[tuple[int, int, int, object, int]] = []
 
     def observer(step: TraceStep, instruction, _context: TritonContext) -> None:
         if instruction.isTainted():
@@ -89,7 +92,6 @@ def run_taint_analysis(trace_path, config: RecoveryConfig) -> tuple[int, int, Ta
                                 origin.getAddress(),
                                 size,
                                 symbolic_expression,
-                                symbolic_expression.getAst().isSymbolized(),
                                 count_reference_ids(ast_text),
                             )
                         )
@@ -101,13 +103,20 @@ def run_taint_analysis(trace_path, config: RecoveryConfig) -> tuple[int, int, Ta
     output_sizes: dict[int, int] = {}
 
     selected_candidates: list[tuple[int, int, int, int, object]] = []
-    for step_index, address, size, symbolic_expression, ast_symbolized, reference_count in sink_candidates:
-        if not ast_symbolized:
+    for step_index, address, size, symbolic_expression, reference_count in sink_candidates:
+        concrete_bytes = bytes(ctx.getConcreteMemoryAreaValue(address, size))
+        if concrete_bytes != trace.output_bytes:
             continue
         selected_candidates.append((reference_count, step_index, address, size, symbolic_expression))
 
     if not selected_candidates:
-        raise RuntimeError("未在轨迹中找到包含符号输入的 tainted store sink")
+        observed_bytes = sorted(
+            {
+                (address, bytes(ctx.getConcreteMemoryAreaValue(address, size)))
+                for _, address, size, _, _ in sink_candidates
+            }
+        )
+        raise RuntimeError(f"未在轨迹中找到与真实输出一致的 tainted store sink: {observed_bytes[:5]}")
 
     # 先按引用层数挑最深的候选，再用更晚的写点打破平局。
     # 这里保留最终组合出的结果，而不是更早的中间临时值。
@@ -143,6 +152,7 @@ def run_taint_analysis(trace_path, config: RecoveryConfig) -> tuple[int, int, Ta
         output_roots=output_roots,
         output_slices=output_slices,
         output_sizes=output_sizes,
+        output_bytes=trace.output_bytes,
         tainted_memory=tainted_memory,
         tainted_registers=tainted_registers,
         context_hits=tuple(sorted(context_hits)),

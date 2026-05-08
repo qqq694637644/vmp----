@@ -71,15 +71,15 @@ def initialize_context(config: RecoveryConfig) -> TritonContext:
     ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.RBP), stack_top)
     ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.RIP), config.entry_address)
 
-    # 这里只把输入参数寄存器当作符号源，避免把输出指针和长度也污染进去。
-    # 之前把所有参数都打污点会把大量内部地址运算误判成输出数据流。
-    for reg_const, alias in (
-        (REG.X86_64.RCX, "arg_plaintext_ptr"),
-        (REG.X86_64.RDX, "arg_key_ptr"),
+    # 入口参数寄存器先作为污点源，保证指针链和长度链能继续传播。
+    # 这里只打污点，不把寄存器本身符号化，避免把地址值混入最终公式。
+    for reg_const in (
+        REG.X86_64.RCX,
+        REG.X86_64.RDX,
+        REG.X86_64.R8,
+        REG.X86_64.R9,
     ):
-        register = make_register(ctx, reg_const)
-        ctx.symbolizeRegister(register, alias)
-        ctx.taintRegister(register)
+        ctx.taintRegister(make_register(ctx, reg_const))
 
     return ctx
 

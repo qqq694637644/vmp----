@@ -13,6 +13,32 @@ class TraceStep:
 
 
 @dataclass(frozen=True)
+class EntryArguments:
+    plaintext_base: int
+    key_base: int
+    output_base: int
+    length: int
+    plaintext: bytes
+    key: bytes
+
+
+@dataclass(frozen=True)
+class TraceMetadata:
+    entry_address: int
+    function_size: int
+    steps: tuple[TraceStep, ...]
+    entry_arguments: EntryArguments | None = None
+    stack_pointer: int | None = None
+    return_address: int | None = None
+    output_bytes: bytes | None = None
+
+    def __iter__(self):
+        yield self.entry_address
+        yield self.function_size
+        yield self.steps
+
+
+@dataclass(frozen=True)
 class MemoryRegion:
     name: str
     base: int
@@ -70,6 +96,7 @@ class TaintAnalysisResult:
     output_roots: dict[int, int]
     output_slices: dict[int, tuple[int, ...]]
     output_sizes: dict[int, int]
+    output_bytes: bytes
     tainted_memory: tuple[str, ...]
     tainted_registers: tuple[str, ...]
     context_hits: tuple[str, ...]

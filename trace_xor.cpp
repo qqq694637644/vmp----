@@ -33,6 +33,13 @@ struct TraceState
     DWORD64 functionAddress = 0;
     DWORD64 functionSize = 0;
     DWORD64 returnAddress = 0;
+    DWORD64 plaintextAddress = 0;
+    DWORD64 keyAddress = 0;
+    DWORD64 outputAddress = 0;
+    DWORD64 length = 0;
+    std::vector<BYTE> plaintextBytes;
+    std::vector<BYTE> keyBytes;
+    std::vector<BYTE> outputBytes;
     Breakpoint entryBreakpoint;
     bool tracing = false;
     std::uint64_t stepIndex = 0;
@@ -265,7 +272,7 @@ void LogInstruction(TraceState &state, DWORD64 address)
 void StartTrace(TraceState &state)
 {
     CONTEXT context{};
-    context.ContextFlags = CONTEXT_CONTROL;
+    context.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
     if (GetThreadContext(state.thread, &context) == 0)
     {
         Fail("获取线程上下文失败");
@@ -276,6 +283,26 @@ void StartTrace(TraceState &state)
     if (ReadProcessBytes(state.process, context.Rsp, reinterpret_cast<BYTE *>(&state.returnAddress), sizeof(state.returnAddress), readCount) == false || readCount != sizeof(state.returnAddress))
     {
         Fail("读取返回地址失败");
+    }
+
+    state.plaintextAddress = context.Rcx;
+    state.keyAddress = context.Rdx;
+    state.outputAddress = context.R8;
+    state.length = context.R9;
+    if (state.length == 0)
+    {
+        Fail("入口参数长度为 0");
+    }
+
+    state.plaintextBytes.resize(static_cast<std::size_t>(state.length));
+    state.keyBytes.resize(static_cast<std::size_t>(state.length));
+    if (ReadProcessBytes(state.process, state.plaintextAddress, state.plaintextBytes.data(), static_cast<SIZE_T>(state.length), readCount) == false || readCount != static_cast<SIZE_T>(state.length))
+    {
+        Fail("读取 plaintext 参数失败");
+    }
+    if (ReadProcessBytes(state.process, state.keyAddress, state.keyBytes.data(), static_cast<SIZE_T>(state.length), readCount) == false || readCount != static_cast<SIZE_T>(state.length))
+    {
+        Fail("读取 key 参数失败");
     }
 
     if (RestoreSoftwareBreakpoint(state.process, state.entryBreakpoint) == false)
@@ -293,6 +320,14 @@ void StartTrace(TraceState &state)
     state.tracing = true;
     state.stepIndex = 1;
     PrintLine(std::string(u8"已进入 XorTransform，返回地址=") + ToHex64(state.returnAddress));
+    PrintLine(
+        std::string(u8"参数：RSP=") + ToHex64(context.Rsp) +
+        u8"，RCX=" + ToHex64(state.plaintextAddress) +
+        u8"，RDX=" + ToHex64(state.keyAddress) +
+        u8"，R8=" + ToHex64(state.outputAddress) +
+        u8"，R9=" + ToHex64(state.length) +
+        u8"，plaintext=" + BytesToHex(state.plaintextBytes.data(), state.plaintextBytes.size()) +
+        u8"，key=" + BytesToHex(state.keyBytes.data(), state.keyBytes.size()));
     LogInstruction(state, state.entryBreakpoint.address);
 }
 
@@ -307,6 +342,14 @@ void HandleSingleStep(TraceState &state)
 
     if (context.Rip == state.returnAddress)
     {
+        state.outputBytes.resize(static_cast<std::size_t>(state.length));
+        SIZE_T readCount = 0;
+        if (ReadProcessBytes(state.process, state.outputAddress, state.outputBytes.data(), static_cast<SIZE_T>(state.length), readCount) == false || readCount != static_cast<SIZE_T>(state.length))
+        {
+            Fail("读取输出参数失败");
+        }
+
+        PrintLine(std::string(u8"输出：") + BytesToHex(state.outputBytes.data(), state.outputBytes.size()));
         state.tracing = false;
         PrintLine(std::string(u8"已离开 XorTransform，步骤数=") + std::to_string(state.stepIndex));
         return;

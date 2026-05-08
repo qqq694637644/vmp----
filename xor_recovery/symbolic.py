@@ -16,6 +16,8 @@ def recover_formulas(trace_path, config: RecoveryConfig, taint_report: TaintAnal
     entry_address, function_size, steps = parse_trace(trace_path)
     ctx = initialize_context(config)
     ast_ctx = ctx.getAstContext()
+    if taint_report.output_bytes is None:
+        raise RuntimeError("轨迹里没有真实输出字节，无法校验公式")
 
     sink_specs: dict[int, tuple[int, int]] = {}
     for output_address, expr_id in taint_report.output_roots.items():
@@ -57,7 +59,7 @@ def recover_formulas(trace_path, config: RecoveryConfig, taint_report: TaintAnal
         if captured is None:
             raise RuntimeError(f"第二遍没有捕获到 sink: addr={hex(output_address)} expr_id={expr_id}")
 
-        symbolic_expression, concrete_bytes = captured
+        symbolic_expression, _concrete_bytes = captured
         actual_slice = ctx.sliceExpressions(symbolic_expression)
         actual_slice_ids = set(actual_slice.keys())
         if expected_slice != actual_slice_ids:
@@ -70,7 +72,7 @@ def recover_formulas(trace_path, config: RecoveryConfig, taint_report: TaintAnal
             byte_high = byte_low + 7
             byte_formula = render_formula(ctx, ast_ctx.extract(byte_high, byte_low, symbolic_expression.getAst()))
             evaluated_value = ctx.evaluateAstViaSolver(byte_formula)
-            concrete_value = concrete_bytes[offset]
+            concrete_value = taint_report.output_bytes[offset]
             if evaluated_value != concrete_value:
                 raise RuntimeError(
                     f"公式校验失败: addr={hex(output_address + offset)} 公式值={evaluated_value:#x} 实际值={concrete_value:#x}"
