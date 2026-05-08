@@ -7,8 +7,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from xor_recovery.reference import build_test_vectors
-from xor_recovery.vector_compare import compare_all_vectors
+from xor_recovery.triton_compare import compare_all_vectors
+from xor_recovery.vectors import build_test_vectors
 
 
 def configure_utf8_console() -> None:
@@ -40,7 +40,7 @@ def main() -> int:
             f"  {case.vector.name}: "
             f"plain={case.vector.plaintext:#010x} "
             f"key={case.vector.key:#010x} "
-            f"result={case.reference_result:#010x}"
+            f"trace={case.verification.trace_result:#010x}"
         )
     return 0
 

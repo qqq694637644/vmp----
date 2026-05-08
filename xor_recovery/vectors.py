@@ -1,9 +1,7 @@
-"""恢复出的算法真值与测试向量。
+"""测试向量集合。
 
-这个模块只放纯函数和可重复的测试向量生成逻辑，不依赖 Triton，也不依赖
-任何本地二进制。它的用途有两个：
-1. 作为恢复结果的独立参考实现。
-2. 为对拍测试生成一组稳定的输入向量。
+这里只负责生成稳定的输入数据，不包含任何算法真值。
+算法真值必须来自 Triton 恢复流程，而不是这里手写的公式。
 """
 
 from __future__ import annotations
@@ -24,36 +22,8 @@ class TestVector:
     key: int
 
 
-def rotl32(value: int, shift: int) -> int:
-    """32 位循环左移。"""
-    shift &= 31
-    value &= MASK32
-    return ((value << shift) | (value >> ((32 - shift) & 31))) & MASK32
-
-
-def bswap32(value: int) -> int:
-    """32 位字节重排。"""
-    value &= MASK32
-    return int.from_bytes(value.to_bytes(4, byteorder="little"), byteorder="big")
-
-
-def recovered_transform(plaintext: int, key: int) -> int:
-    """恢复出的算法真值。
-
-    这里必须和 `encrypt_demo.cpp` 里的 `XorTransform` 保持严格一致。
-    """
-    step1 = (plaintext + 0x13579BDF) & MASK32
-    step2 = rotl32(key ^ 0x2468ACE0, 7)
-    step3 = bswap32(step1 ^ step2)
-    step4 = rotl32(plaintext ^ 0x11223344, 11)
-    step5 = (step3 + step4) & MASK32
-    step6 = (step5 * 0x9E3779B1) & MASK32
-    step7 = step6 ^ ((key + 0x0F1E2D3C) & MASK32)
-    return rotl32(step7, 3) ^ 0xA5A5A5A5
-
-
 def format_u32_hex(value: int) -> str:
-    """把 32 位整数格式化成固定宽度十六进制。"""
+    """把 32 位整数格式化成命令行可直接读取的十六进制参数。"""
     return f"0x{value & MASK32:08X}"
 
 

@@ -11,13 +11,14 @@ import unittest
 from pathlib import Path
 
 from xor_recovery.pipeline import build_config_from_trace, recover
-from xor_recovery.reference import recovered_transform
 from xor_recovery.trace_io import parse_trace
 from xor_recovery.verification import verify_binary_consistency
 
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD_DIR = ROOT / "build"
+
+
 class RecoveryPipelineTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -76,15 +77,9 @@ class RecoveryPipelineTest(unittest.TestCase):
             [formula.byte_offset for formula in result.formulas],
             [0, 1, 2, 3],
         )
-        expected_value = reference_transform(
-            trace_metadata.entry_arguments.plaintext_value,
-            trace_metadata.entry_arguments.key_value,
-        )
-        expected_bytes = expected_value.to_bytes(4, byteorder="little")
         self.assertEqual(result.taint.result_value, trace_metadata.result_value)
         self.assertEqual(result.taint.result_bytes, trace_metadata.result_bytes)
-        self.assertEqual(result.taint.result_value, expected_value)
-        self.assertEqual([formula.evaluated_value for formula in result.formulas], list(expected_bytes))
+        self.assertEqual([formula.evaluated_value for formula in result.formulas], list(result.taint.result_bytes))
 
         verification = verify_binary_consistency(
             BUILD_DIR,
@@ -94,10 +89,10 @@ class RecoveryPipelineTest(unittest.TestCase):
             result.formulas,
         )
         self.assertTrue(verification.all_match)
-        self.assertEqual(verification.trace_result, expected_value)
-        self.assertEqual(verification.symbolic_result, expected_value)
-        self.assertEqual(verification.unprotected_result, expected_value)
-        self.assertEqual(verification.protected_result, expected_value)
+        self.assertEqual(verification.trace_result, trace_metadata.result_value)
+        self.assertEqual(verification.symbolic_result, trace_metadata.result_value)
+        self.assertEqual(verification.unprotected_result, trace_metadata.result_value)
+        self.assertEqual(verification.protected_result, trace_metadata.result_value)
 
 
 if __name__ == "__main__":

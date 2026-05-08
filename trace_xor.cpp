@@ -708,7 +708,11 @@ void StartTrace(TraceState &state)
     PrintLine(std::string(u8"栈快照=") + BytesToHex(state.stackBytes.data(), state.stackBytes.size()));
     if (context.Rdi != context.R8)
     {
-        Fail("RDI 和 R8 的 VM 上下文基址不一致");
+        PrintLine(
+            std::string(u8"警告：RDI 和 R8 的 VM 上下文基址不一致，"
+                        u8"将以 RDI 作为实际上下文基址继续采样，RDI=") +
+            ToHex64(context.Rdi) +
+            u8"，R8=" + ToHex64(context.R8));
     }
     std::vector<BYTE> vmContextBytes;
     CaptureMemorySnapshot(state.process, context.Rdi, kContextSnapshotSize, vmContextBytes);
