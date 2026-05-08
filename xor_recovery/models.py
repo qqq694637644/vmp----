@@ -42,12 +42,20 @@ class EntryRegisters:
 
 
 @dataclass(frozen=True)
+class EntryVectorState:
+    mxcsr: int
+    mxcsr_mask: int
+    xmm_registers: tuple[bytes, ...]
+
+
+@dataclass(frozen=True)
 class TraceMetadata:
     entry_address: int
     function_size: int
     steps: tuple[TraceStep, ...]
     entry_arguments: EntryArguments | None = None
     entry_registers: EntryRegisters | None = None
+    entry_vector_state: EntryVectorState | None = None
     stack_pointer: int | None = None
     return_address: int | None = None
     result_value: int | None = None
@@ -82,6 +90,7 @@ class RecoveryConfig:
     return_address: int
     operand_size: int = 4
     entry_registers: EntryRegisters | None = None
+    entry_vector_state: EntryVectorState | None = None
     stack_bytes: bytes | None = None
     context_region: MemoryRegion | None = None
     stack_size: int = 0x2000

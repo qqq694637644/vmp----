@@ -38,6 +38,31 @@ def zero_general_registers(ctx: TritonContext) -> None:
         ctx.setConcreteRegisterValue(make_register(ctx, reg_const), 0)
 
 
+def zero_vector_registers(ctx: TritonContext) -> None:
+    # 向量寄存器和 MXCSR 也是执行语义的一部分，不能沿用 Triton 上一次残留的状态。
+    for reg_const in (
+        REG.X86_64.MXCSR,
+        REG.X86_64.MXCSR_MASK,
+        REG.X86_64.XMM0,
+        REG.X86_64.XMM1,
+        REG.X86_64.XMM2,
+        REG.X86_64.XMM3,
+        REG.X86_64.XMM4,
+        REG.X86_64.XMM5,
+        REG.X86_64.XMM6,
+        REG.X86_64.XMM7,
+        REG.X86_64.XMM8,
+        REG.X86_64.XMM9,
+        REG.X86_64.XMM10,
+        REG.X86_64.XMM11,
+        REG.X86_64.XMM12,
+        REG.X86_64.XMM13,
+        REG.X86_64.XMM14,
+        REG.X86_64.XMM15,
+    ):
+        ctx.setConcreteRegisterValue(make_register(ctx, reg_const), 0)
+
+
 def apply_entry_registers(ctx: TritonContext, config: RecoveryConfig) -> None:
     if config.entry_registers is None:
         raise ValueError("入口寄存器快照缺失，无法初始化 Triton 上下文")
@@ -66,11 +91,28 @@ def apply_entry_registers(ctx: TritonContext, config: RecoveryConfig) -> None:
     ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.EFLAGS), entry.eflags)
 
 
+def apply_entry_vector_state(ctx: TritonContext, config: RecoveryConfig) -> None:
+    if config.entry_vector_state is None:
+        raise ValueError("入口向量状态快照缺失，无法初始化 Triton 上下文")
+
+    vector_state = config.entry_vector_state
+    ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.MXCSR), vector_state.mxcsr)
+    ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.MXCSR_MASK), vector_state.mxcsr_mask)
+    if len(vector_state.xmm_registers) != 16:
+        raise ValueError("入口向量寄存器数量不正确")
+
+    for index, xmm_bytes in enumerate(vector_state.xmm_registers):
+        xmm_register = getattr(REG.X86_64, f"XMM{index}")
+        ctx.setConcreteRegisterValue(make_register(ctx, xmm_register), int.from_bytes(xmm_bytes, byteorder="little"))
+
+
 def initialize_context(config: RecoveryConfig) -> TritonContext:
     ctx = TritonContext()
     ctx.setArchitecture(ARCH.X86_64)
     zero_general_registers(ctx)
+    zero_vector_registers(ctx)
     apply_entry_registers(ctx, config)
+    apply_entry_vector_state(ctx, config)
 
     stack_bytes = config.stack_bytes if config.stack_bytes is not None else b"\x00" * config.stack_size
     if len(stack_bytes) != config.stack_size:

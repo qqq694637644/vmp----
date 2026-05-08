@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from .pipeline import build_config_from_trace, recover
+from .snapshot import get_minimal_snapshot_items
 
 
 def format_hex(value: int) -> str:
@@ -59,6 +60,9 @@ def main() -> int:
     print(f"已读取轨迹: {result.trace_path}")
     print(f"函数入口: {format_hex(result.entry_address)}")
     print(f"函数大小: {result.function_size}")
+    print("最小快照清单")
+    for item in get_minimal_snapshot_items():
+        print(f"  - {item}")
     print("第一遍：动态污点分析")
     print(f"  污点步骤数: {len(result.taint.tainted_steps)}")
     print(f"  关键寄存器: {format_preview(result.taint.tainted_registers)}")

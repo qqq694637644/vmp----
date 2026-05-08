@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .models import EntryArguments, EntryRegisters, TraceMetadata, TraceStep
+from .models import EntryArguments, EntryRegisters, EntryVectorState, TraceMetadata, TraceStep
 
 
 ENTRY_RE = re.compile(r"已定位 XorTransform，地址=(0x[0-9A-Fa-f]+)(?:，RVA=(0x[0-9A-Fa-f]+))?，大小=(\d+)")
@@ -11,6 +11,8 @@ ENTER_RE = re.compile(r"^已进入 XorTransform，返回地址=(0x[0-9A-Fa-f]+)$
 REGS_RE = re.compile(
     r"^寄存器：RAX=(0x[0-9A-Fa-f]+)，RBX=(0x[0-9A-Fa-f]+)，RCX=(0x[0-9A-Fa-f]+)，RDX=(0x[0-9A-Fa-f]+)，RSI=(0x[0-9A-Fa-f]+)，RDI=(0x[0-9A-Fa-f]+)，RBP=(0x[0-9A-Fa-f]+)，RSP=(0x[0-9A-Fa-f]+)，R8=(0x[0-9A-Fa-f]+)，R9=(0x[0-9A-Fa-f]+)，R10=(0x[0-9A-Fa-f]+)，R11=(0x[0-9A-Fa-f]+)，R12=(0x[0-9A-Fa-f]+)，R13=(0x[0-9A-Fa-f]+)，R14=(0x[0-9A-Fa-f]+)，R15=(0x[0-9A-Fa-f]+)，EFLAGS=(0x[0-9A-Fa-f]+)$"
 )
+FLOAT_STATE_RE = re.compile(r"^浮点状态：MXCSR=(0x[0-9A-Fa-f]+)，MXCSR_MASK=(0x[0-9A-Fa-f]+)$")
+VECTOR_PREFIX = "向量寄存器："
 STACK_RE = re.compile(r"^栈快照=([0-9A-Fa-f ]+)$")
 ARGS_RE = re.compile(
     r"^参数：RSP=(0x[0-9A-Fa-f]+)，RCX=(0x[0-9A-Fa-f]+)，RDX=(0x[0-9A-Fa-f]+)，plaintext=([0-9A-Fa-f ]+)，key=([0-9A-Fa-f ]+)$"
@@ -32,11 +34,15 @@ def parse_trace(trace_path: Path) -> TraceMetadata:
     steps: list[TraceStep] = []
     entry_arguments: EntryArguments | None = None
     entry_registers: EntryRegisters | None = None
+    entry_vector_state: EntryVectorState | None = None
     stack_pointer: int | None = None
     return_address: int | None = None
     result_value: int | None = None
     result_bytes: bytes | None = None
     stack_bytes: bytes | None = None
+    mxcsr: int | None = None
+    mxcsr_mask: int | None = None
+    xmm_registers: tuple[bytes, ...] | None = None
 
     for raw_line in trace_path.read_text(encoding="utf-8").splitlines():
         entry_match = ENTRY_RE.search(raw_line)
@@ -71,6 +77,32 @@ def parse_trace(trace_path: Path) -> TraceMetadata:
                 r15=int(regs_match.group(16), 16),
                 eflags=int(regs_match.group(17), 16),
             )
+            continue
+
+        float_match = FLOAT_STATE_RE.match(raw_line)
+        if float_match is not None:
+            mxcsr = int(float_match.group(1), 16)
+            mxcsr_mask = int(float_match.group(2), 16)
+            continue
+
+        if raw_line.startswith(VECTOR_PREFIX):
+            if mxcsr is None or mxcsr_mask is None:
+                raise ValueError("向量寄存器快照先于浮点状态出现，日志格式不正确")
+
+            vector_payload = raw_line.removeprefix(VECTOR_PREFIX)
+            xmm_items = vector_payload.split("，")
+            if len(xmm_items) != 16:
+                raise ValueError("向量寄存器数量不正确")
+
+            parsed_xmm_registers: list[bytes] = []
+            for index, item in enumerate(xmm_items):
+                name, value = item.split("=", 1)
+                expected_name = f"XMM{index}"
+                if name != expected_name:
+                    raise ValueError(f"向量寄存器顺序错误: 期望 {expected_name}，实际 {name}")
+                parsed_xmm_registers.append(parse_hex_bytes(value))
+
+            xmm_registers = tuple(parsed_xmm_registers)
             continue
 
         stack_match = STACK_RE.match(raw_line)
@@ -116,6 +148,8 @@ def parse_trace(trace_path: Path) -> TraceMetadata:
         raise ValueError("轨迹里没有找到 XorTransform 入口参数")
     if entry_registers is None:
         raise ValueError("轨迹里没有找到 XorTransform 入口寄存器")
+    if mxcsr is None or mxcsr_mask is None or xmm_registers is None:
+        raise ValueError("轨迹里没有找到 XorTransform 向量寄存器快照")
     if stack_pointer is None:
         raise ValueError("轨迹里没有找到 XorTransform 栈指针")
     if return_address is None:
@@ -133,6 +167,11 @@ def parse_trace(trace_path: Path) -> TraceMetadata:
         steps=tuple(steps),
         entry_arguments=entry_arguments,
         entry_registers=entry_registers,
+        entry_vector_state=EntryVectorState(
+            mxcsr=mxcsr,
+            mxcsr_mask=mxcsr_mask,
+            xmm_registers=xmm_registers,
+        ),
         stack_pointer=stack_pointer,
         return_address=return_address,
         result_value=result_value,
