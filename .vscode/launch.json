@@ -10,7 +10,7 @@
             "program": "${workspaceFolder}/recover_xor_formula.py",
             "python": "D:\\repos\\vmp测试实验\\myvenv\\Scripts\\python.exe",
             "args": [
-                "${workspaceFolder}/build/trace.log"
+                "${workspaceFolder}/build/trace_protected_full.log"
             ],
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",
