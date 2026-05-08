@@ -118,11 +118,12 @@ def recover(trace_path: Path, config: RecoveryConfig) -> RecoveryResult:
     第二遍只针对这个切片做符号执行和公式恢复，避免把整条 VM 轨迹都当成同等重要。
     """
     entry_address, function_size, taint_report = run_taint_analysis(trace_path, config)
-    _, _, formulas = recover_formulas(trace_path, config, taint_report)
+    _, _, algorithm, formulas = recover_formulas(trace_path, config, taint_report)
     return RecoveryResult(
         trace_path=trace_path,
         entry_address=entry_address,
         function_size=function_size,
         taint=taint_report,
+        algorithm=algorithm,
         formulas=formulas,
     )

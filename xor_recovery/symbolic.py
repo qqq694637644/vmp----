@@ -10,7 +10,8 @@ from pathlib import Path
 
 from triton import REG, TritonContext
 
-from .models import FormulaResult, RecoveryConfig, TaintAnalysisResult
+from .export import build_recovered_algorithm
+from .models import FormulaResult, RecoveryConfig, RecoveredAlgorithm, TaintAnalysisResult
 from .trace_io import parse_trace
 from .triton_runtime import initialize_context, replay_trace
 
@@ -20,10 +21,14 @@ def render_formula(ctx: TritonContext, ast_node) -> object:
 
     这里故意不再自己写一层 AST 递归简化，避免重复实现 Triton 已经提供的能力。
     """
-    return ctx.simplify(ast_node, True)
+    return ctx.simplify(ast_node, True, True)
 
 
-def recover_formulas(trace_path: Path, config: RecoveryConfig, taint_report: TaintAnalysisResult) -> tuple[int, int, tuple[FormulaResult, ...]]:
+def recover_formulas(
+    trace_path: Path,
+    config: RecoveryConfig,
+    taint_report: TaintAnalysisResult,
+) -> tuple[int, int, RecoveredAlgorithm, tuple[FormulaResult, ...]]:
     """执行第二遍符号恢复。
 
     前提是第一遍已经找到了返回根和对应切片，因此这里的工作重心是：
@@ -56,6 +61,8 @@ def recover_formulas(trace_path: Path, config: RecoveryConfig, taint_report: Tai
         raise RuntimeError(
             f"未跑通到最终汇点: 期望 RAX={taint_report.result_value:#x}，重放得到 RAX={taint_report.replayed_result_value:#x}"
         )
+
+    algorithm = build_recovered_algorithm(ctx, result_name, result_expression.getAst())
 
     # 第一遍算出的切片和第二遍实际回放出来的切片也必须完全一致。
     expected_slice = set(taint_report.result_slices[result_name])
@@ -95,4 +102,4 @@ def recover_formulas(trace_path: Path, config: RecoveryConfig, taint_report: Tai
             )
         )
 
-    return entry_address, function_size, tuple(formulas)
+    return entry_address, function_size, algorithm, tuple(formulas)

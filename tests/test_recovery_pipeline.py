@@ -80,6 +80,15 @@ class RecoveryPipelineTest(unittest.TestCase):
         self.assertIsNotNone(config.vm_context_region)
         result = recover(trace_path, config)
 
+        self.assertEqual(result.algorithm.result_name, "reg:rax")
+        self.assertGreater(len(result.algorithm.simplified_ast_text), 0)
+        self.assertGreater(len(result.algorithm.llvm_ir), 0)
+        self.assertGreater(len(result.algorithm.human_readable_text), 0)
+        self.assertIn("plaintext", result.algorithm.human_readable_text)
+        self.assertIn("key", result.algorithm.human_readable_text)
+        self.assertIn("rotl32", result.algorithm.human_readable_text)
+        self.assertIn("define i64", result.algorithm.llvm_ir)
+
         self.assertEqual(len(result.formulas), 4)
         self.assertGreater(len(result.taint.tainted_steps), 0)
         self.assertEqual(list(result.taint.result_roots.keys()), ["reg:rax"])

@@ -217,9 +217,18 @@ class FormulaResult:
 
 
 @dataclass(frozen=True)
+class RecoveredAlgorithm:
+    result_name: str
+    simplified_ast_text: str
+    llvm_ir: str
+    human_readable_text: str
+
+
+@dataclass(frozen=True)
 class RecoveryResult:
     trace_path: Path
     entry_address: int
     function_size: int
     taint: TaintAnalysisResult
+    algorithm: RecoveredAlgorithm
     formulas: tuple[FormulaResult, ...]

@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 from .analysis import run_taint_analysis
-from .models import FormulaResult, MemoryRegion, TaintAnalysisResult, TraceMetadata, TraceStep
+from .models import FormulaResult, MemoryRegion, RecoveredAlgorithm, TaintAnalysisResult, TraceMetadata, TraceStep
 from .pipeline import build_config_from_trace
 from .snapshot import get_minimal_snapshot_items
 from .symbolic import recover_formulas
@@ -119,6 +119,21 @@ def print_taint_report(taint_report: TaintAnalysisResult) -> None:
         print(f"    ... 省略 {len(taint_report.dependency_graph) - 10} 项")
 
 
+def print_algorithm_report(algorithm: RecoveredAlgorithm) -> None:
+    """输出整体算法的三种导出结果。
+
+    这里不把巨长的 AST / LLVM IR 全部直接铺到终端，只打印长度和人类可读算法本体。
+    完整文本已经放在 `RecoveryResult.algorithm` 里，便于后续保存或二次处理。
+    """
+    print("整体算法导出")
+    print(f"  结果根: {algorithm.result_name}")
+    print(f"  简化 AST: 已生成，字符数={len(algorithm.simplified_ast_text)}")
+    print(f"  LLVM IR : 已生成，字符数={len(algorithm.llvm_ir)}")
+    print("  人类可读算法:")
+    for line in algorithm.human_readable_text.splitlines():
+        print(f"    {line}")
+
+
 def print_formula_report(formulas: tuple[FormulaResult, ...]) -> None:
     """输出第二遍符号执行恢复出的公式。"""
     print("第二遍：符号执行")
@@ -180,7 +195,8 @@ def main() -> int:
     if not taint_report.sink_reached:
         return 1
 
-    _, _, formulas = recover_formulas(trace_path, config, taint_report)
+    _, _, algorithm, formulas = recover_formulas(trace_path, config, taint_report)
+    print_algorithm_report(algorithm)
     print_formula_report(formulas)
 
     verification = verify_binary_consistency(trace_path.parent, taint_report.result_value, formulas)
