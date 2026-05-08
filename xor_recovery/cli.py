@@ -180,6 +180,8 @@ def main() -> int:
     trace_path = Path(args.trace_file)
 
     trace_metadata = parse_trace(trace_path)
+    if trace_metadata.entry_arguments is None:
+        raise RuntimeError("trace 中没有入口参数，无法做二进制一致性校验")
     watch_memory_addresses = tuple(dict.fromkeys(args.watch_memory))
     config = build_config_from_trace(trace_metadata, watch_memory_addresses=watch_memory_addresses)
 
@@ -199,7 +201,13 @@ def main() -> int:
     print_algorithm_report(algorithm)
     print_formula_report(formulas)
 
-    verification = verify_binary_consistency(trace_path.parent, taint_report.result_value, formulas)
+    verification = verify_binary_consistency(
+        trace_path.parent,
+        trace_metadata.entry_arguments.plaintext_value,
+        trace_metadata.entry_arguments.key_value,
+        taint_report.result_value,
+        formulas,
+    )
     print_verification_report(verification)
 
     return 0

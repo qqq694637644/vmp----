@@ -11,37 +11,13 @@ import unittest
 from pathlib import Path
 
 from xor_recovery.pipeline import build_config_from_trace, recover
+from xor_recovery.reference import recovered_transform
 from xor_recovery.trace_io import parse_trace
 from xor_recovery.verification import verify_binary_consistency
 
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD_DIR = ROOT / "build"
-
-
-def rotl32(value: int, shift: int) -> int:
-    shift &= 31
-    value &= 0xFFFFFFFF
-    return ((value << shift) | (value >> ((32 - shift) & 31))) & 0xFFFFFFFF
-
-
-def bswap32(value: int) -> int:
-    value &= 0xFFFFFFFF
-    return int.from_bytes(value.to_bytes(4, byteorder="little"), byteorder="big")
-
-
-def reference_transform(plaintext: int, key: int) -> int:
-    # 这里的 Python 参考实现必须和 encrypt_demo.cpp 完全一致，用来验证符号恢复出来的公式。
-    step1 = (plaintext + 0x13579BDF) & 0xFFFFFFFF
-    step2 = rotl32(key ^ 0x2468ACE0, 7)
-    step3 = bswap32(step1 ^ step2)
-    step4 = rotl32(plaintext ^ 0x11223344, 11)
-    step5 = (step3 + step4) & 0xFFFFFFFF
-    step6 = (step5 * 0x9E3779B1) & 0xFFFFFFFF
-    step7 = step6 ^ ((key + 0x0F1E2D3C) & 0xFFFFFFFF)
-    return rotl32(step7, 3) ^ 0xA5A5A5A5
-
-
 class RecoveryPipelineTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -110,7 +86,13 @@ class RecoveryPipelineTest(unittest.TestCase):
         self.assertEqual(result.taint.result_value, expected_value)
         self.assertEqual([formula.evaluated_value for formula in result.formulas], list(expected_bytes))
 
-        verification = verify_binary_consistency(BUILD_DIR, result.taint.result_value, result.formulas)
+        verification = verify_binary_consistency(
+            BUILD_DIR,
+            trace_metadata.entry_arguments.plaintext_value,
+            trace_metadata.entry_arguments.key_value,
+            result.taint.result_value,
+            result.formulas,
+        )
         self.assertTrue(verification.all_match)
         self.assertEqual(verification.trace_result, expected_value)
         self.assertEqual(verification.symbolic_result, expected_value)

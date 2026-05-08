@@ -55,13 +55,18 @@ def parse_program_result(stdout: bytes) -> int:
     raise ValueError("程序输出里没有找到 result 行")
 
 
-def run_program_result(binary_path: Path) -> int:
+def format_u32_argument(value: int) -> str:
+    """把输入格式化成二进制可直接读取的 32 位参数。"""
+    return f"0x{value & 0xFFFFFFFF:08X}"
+
+
+def run_program_result(binary_path: Path, plaintext_value: int, key_value: int) -> int:
     """运行目标二进制并提取它打印的结果值。"""
     if not binary_path.is_file():
         raise FileNotFoundError(f"找不到待验证程序: {binary_path}")
 
     completed = subprocess.run(
-        [str(binary_path)],
+        [str(binary_path), format_u32_argument(plaintext_value), format_u32_argument(key_value)],
         cwd=str(binary_path.parent),
         capture_output=True,
         check=True,
@@ -91,6 +96,8 @@ def assemble_symbolic_result(formulas: tuple[FormulaResult, ...]) -> int:
 
 def verify_binary_consistency(
     binary_dir: Path,
+    plaintext_value: int,
+    key_value: int,
     trace_result: int,
     formulas: tuple[FormulaResult, ...],
 ) -> BinaryConsistencyReport:
@@ -103,8 +110,8 @@ def verify_binary_consistency(
     protected_binary = binary_dir / "encrypt_demo.protected.exe"
 
     symbolic_result = assemble_symbolic_result(formulas)
-    unprotected_result = run_program_result(unprotected_binary)
-    protected_result = run_program_result(protected_binary)
+    unprotected_result = run_program_result(unprotected_binary, plaintext_value, key_value)
+    protected_result = run_program_result(protected_binary, plaintext_value, key_value)
 
     report = BinaryConsistencyReport(
         binary_dir=binary_dir,

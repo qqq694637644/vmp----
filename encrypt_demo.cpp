@@ -1,9 +1,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <intrin.h>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
+#include <stdexcept>
 #include <sstream>
+#include <string>
 
 #include "VMProtectSDK.h"
 
@@ -40,16 +43,49 @@ __declspec(noinline) std::uint32_t XorTransform(std::uint32_t plaintext, std::ui
     VMProtectEnd();
     return result;
 }
+
+std::uint32_t ParseUint32Argument(const char *text)
+{
+    if (text == nullptr || *text == '\0')
+    {
+        throw std::invalid_argument("参数不能为空");
+    }
+
+    const unsigned long value = std::stoul(std::string(text), nullptr, 0);
+    if (value > 0xFFFFFFFFUL)
+    {
+        throw std::out_of_range("参数超出 32 位无符号整数范围");
+    }
+
+    return static_cast<std::uint32_t>(value);
+}
 } // namespace
 
-int main()
+int main(int argc, char *argv[])
 {
-    constexpr std::uint32_t plaintext = 0x34333231u;
-    constexpr std::uint32_t key = 0x2179656bu;
+    if (argc != 3)
+    {
+        std::cerr << "用法: encrypt_demo.exe <plaintext> <key>" << std::endl;
+        std::cerr << "说明: 参数支持十进制或 0x 前缀十六进制，必须传入 32 位无符号整数。" << std::endl;
+        return 1;
+    }
+
+    std::uint32_t plaintext = 0;
+    std::uint32_t key = 0;
+    try
+    {
+        plaintext = ParseUint32Argument(argv[1]);
+        key = ParseUint32Argument(argv[2]);
+    }
+    catch (const std::exception &exc)
+    {
+        std::cerr << "参数解析失败: " << exc.what() << std::endl;
+        return 1;
+    }
 
     const std::uint32_t result = XorTransform(plaintext, key);
-    std::cout << "plaintext : 1234" << std::endl;
-    std::cout << "key       : key!" << std::endl;
+    std::cout << "plaintext : 0x" << TextToHex(plaintext) << std::endl;
+    std::cout << "key       : 0x" << TextToHex(key) << std::endl;
     std::cout << "result    : 0x" << TextToHex(result) << std::endl;
     return 0;
 }
