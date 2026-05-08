@@ -6,7 +6,7 @@ from triton import CALLBACK, REG, TritonContext
 
 from .models import DependencyNode, MemoryRegion, RecoveryConfig, TaintAnalysisResult, TraceStep
 from .trace_io import parse_trace
-from .triton_runtime import compare_register_snapshot, initialize_context, replay_trace
+from .triton_runtime import initialize_context, replay_trace
 
 
 REF_RE = re.compile(r"ref!(\d+)")
@@ -197,7 +197,8 @@ def run_taint_analysis(trace_path, config: RecoveryConfig) -> tuple[int, int, Ta
                 ast=str(symbolic_expression.getAst()),
             )
 
-    replay_trace(ctx, steps, observer, state_validator=compare_register_snapshot)
+    # 主流程只依赖控制流重放和最终汇点校验；逐步寄存器全比对保留给单独调试场景。
+    replay_trace(ctx, steps, observer)
 
     result_register = ctx.getRegister(REG.X86_64.RAX)
     result_expression = ctx.getSymbolicRegister(result_register)

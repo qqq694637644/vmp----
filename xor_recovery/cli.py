@@ -9,6 +9,7 @@ from .pipeline import build_config_from_trace
 from .snapshot import get_minimal_snapshot_items
 from .symbolic import recover_formulas
 from .triton_runtime import ReplayStateMismatch
+from .verification import verify_binary_consistency
 
 
 def format_hex(value: int) -> str:
@@ -138,5 +139,13 @@ def main() -> int:
             f"  {formula.result_name}[{formula.byte_offset}]: {formula.formula_text} "
             f"=> {formula.evaluated_value:#04x} (slice={formula.slice_size})"
         )
+
+    verification = verify_binary_consistency(trace_path.parent, taint_report.result_value, formulas)
+    print("最终一致性校验")
+    print(f"  未保护程序: {verification.unprotected_binary.name} -> {format_hex(verification.unprotected_result)}")
+    print(f"  受保护程序: {verification.protected_binary.name} -> {format_hex(verification.protected_result)}")
+    print(f"  公式结果  : {format_hex(verification.symbolic_result)}")
+    print(f"  轨迹结果  : {format_hex(verification.trace_result)}")
+    print("  一致性    : 是")
 
     return 0

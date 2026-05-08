@@ -5,6 +5,7 @@ from pathlib import Path
 
 from xor_recovery.pipeline import build_config_from_trace, recover
 from xor_recovery.trace_io import parse_trace
+from xor_recovery.verification import verify_binary_consistency
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,25 +18,35 @@ def rotl32(value: int, shift: int) -> int:
     return ((value << shift) | (value >> ((32 - shift) & 31))) & 0xFFFFFFFF
 
 
+def bswap32(value: int) -> int:
+    value &= 0xFFFFFFFF
+    return int.from_bytes(value.to_bytes(4, byteorder="little"), byteorder="big")
+
+
 def reference_transform(plaintext: int, key: int) -> int:
     step1 = (plaintext + 0x13579BDF) & 0xFFFFFFFF
     step2 = rotl32(key ^ 0x2468ACE0, 7)
-    step3 = step1 ^ step2
-    step4 = rotl32(plaintext, 11)
+    step3 = bswap32(step1 ^ step2)
+    step4 = rotl32(plaintext ^ 0x11223344, 11)
     step5 = (step3 + step4) & 0xFFFFFFFF
-    step6 = step5 ^ ((key + 0x0F1E2D3C) & 0xFFFFFFFF)
-    return rotl32(step6, 3) ^ 0xA5A5A5A5
+    step6 = (step5 * 0x9E3779B1) & 0xFFFFFFFF
+    step7 = step6 ^ ((key + 0x0F1E2D3C) & 0xFFFFFFFF)
+    return rotl32(step7, 3) ^ 0xA5A5A5A5
 
 
 class RecoveryPipelineTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        trace_log = BUILD_DIR / "trace.log"
-        if not trace_log.exists():
-            raise FileNotFoundError(f"缺少 VMP 轨迹日志: {trace_log}")
+        for required_path in (
+            BUILD_DIR / "trace_protected_full.log",
+            BUILD_DIR / "encrypt_demo.exe",
+            BUILD_DIR / "encrypt_demo.protected.exe",
+        ):
+            if not required_path.exists():
+                raise FileNotFoundError(f"缺少回归所需文件: {required_path}")
 
     def test_two_pass_recovery(self) -> None:
-        trace_path = BUILD_DIR / "trace.log"
+        trace_path = BUILD_DIR / "trace_protected_full.log"
         trace_metadata = parse_trace(trace_path)
         entry_address, function_size, steps = trace_metadata
         self.assertGreater(entry_address, 0)
@@ -80,6 +91,13 @@ class RecoveryPipelineTest(unittest.TestCase):
         self.assertEqual(result.taint.result_bytes, trace_metadata.result_bytes)
         self.assertEqual(result.taint.result_value, expected_value)
         self.assertEqual([formula.evaluated_value for formula in result.formulas], list(expected_bytes))
+
+        verification = verify_binary_consistency(BUILD_DIR, result.taint.result_value, result.formulas)
+        self.assertTrue(verification.all_match)
+        self.assertEqual(verification.trace_result, expected_value)
+        self.assertEqual(verification.symbolic_result, expected_value)
+        self.assertEqual(verification.unprotected_result, expected_value)
+        self.assertEqual(verification.protected_result, expected_value)
 
 
 if __name__ == "__main__":
