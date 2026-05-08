@@ -75,6 +75,7 @@ class TraceMetadata:
     entry_vector_state: EntryVectorState | None = None
     vm_context_base: int | None = None
     vm_context_bytes: bytes | None = None
+    entry_memory_snapshots: tuple[MemorySnapshot, ...] = ()
     extra_memory_snapshots: tuple[MemorySnapshot, ...] = ()
     stack_pointer: int | None = None
     return_address: int | None = None
@@ -114,6 +115,7 @@ class RecoveryConfig:
     stack_bytes: bytes | None = None
     vm_context_region: MemoryRegion | None = None
     vm_context_bytes: bytes | None = None
+    entry_memory_snapshots: tuple[MemorySnapshot, ...] = ()
     extra_memory_snapshots: tuple[MemorySnapshot, ...] = ()
     stack_size: int = 0x2000
 

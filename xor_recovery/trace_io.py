@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import struct
 from pathlib import Path
 
 from .models import EntryArguments, EntryRegisters, EntryVectorState, MemorySnapshot, TraceMetadata, TraceStep
@@ -16,6 +17,7 @@ XMM_PREFIX = "XMM寄存器："
 YMM_PREFIX = "YMM高位："
 VM_CONTEXT_BASE_RE = re.compile(r"^VM上下文基址=(0x[0-9A-Fa-f]+)$")
 VM_CONTEXT_RE = re.compile(r"^VM上下文快照=([0-9A-Fa-f ]+)$")
+ENTRY_MEMORY_SNAPSHOT_FILE_RE = re.compile(r"^入口全量快照文件=(.+?)，区域数=(\d+)，总字节=(\d+)$")
 EXTRA_SNAPSHOT_RE = re.compile(
     r"^附加快照\[(\d+)\]：基址=(0x[0-9A-Fa-f]+)，大小=(\d+)，快照=([0-9A-Fa-f ]+)$"
 )
@@ -34,6 +36,39 @@ def parse_hex_bytes(text: str) -> bytes:
     return bytes.fromhex(text.replace(" ", ""))
 
 
+def load_entry_memory_snapshots(snapshot_path: Path) -> tuple[MemorySnapshot, ...]:
+    raw = snapshot_path.read_bytes()
+    if len(raw) < 8:
+        raise ValueError(f"入口全量快照文件过短: {snapshot_path}")
+    if raw[:4] != b"VMSN":
+        raise ValueError(f"入口全量快照文件头不正确: {snapshot_path}")
+
+    version = struct.unpack_from("<I", raw, 4)[0]
+    if version != 1:
+        raise ValueError(f"入口全量快照版本不受支持: {version}")
+
+    offset = 8
+    snapshots: list[MemorySnapshot] = []
+    while offset < len(raw):
+        if offset + 16 > len(raw):
+            raise ValueError(f"入口全量快照文件被截断: {snapshot_path}")
+
+        base, size = struct.unpack_from("<QQ", raw, offset)
+        offset += 16
+        if size == 0:
+            raise ValueError(f"入口全量快照区域大小为 0: {snapshot_path}")
+        if offset + size > len(raw):
+            raise ValueError(f"入口全量快照文件被截断: {snapshot_path}")
+
+        snapshots.append(MemorySnapshot(base=base, bytes=raw[offset:offset + size]))
+        offset += size
+
+    if not snapshots:
+        raise ValueError(f"入口全量快照文件为空: {snapshot_path}")
+
+    return tuple(snapshots)
+
+
 def parse_trace(trace_path: Path) -> TraceMetadata:
     entry_address = 0
     function_size = 0
@@ -43,6 +78,10 @@ def parse_trace(trace_path: Path) -> TraceMetadata:
     entry_vector_state: EntryVectorState | None = None
     vm_context_base: int | None = None
     vm_context_bytes: bytes | None = None
+    entry_memory_snapshot_file: Path | None = None
+    entry_memory_snapshot_count: int | None = None
+    entry_memory_snapshot_total_bytes: int | None = None
+    entry_memory_snapshots: tuple[MemorySnapshot, ...] = ()
     extra_memory_snapshots: list[MemorySnapshot] = []
     stack_pointer: int | None = None
     return_address: int | None = None
@@ -151,6 +190,13 @@ def parse_trace(trace_path: Path) -> TraceMetadata:
             vm_context_bytes = parse_hex_bytes(context_match.group(1))
             continue
 
+        entry_snapshot_match = ENTRY_MEMORY_SNAPSHOT_FILE_RE.match(raw_line)
+        if entry_snapshot_match is not None:
+            entry_memory_snapshot_file = Path(entry_snapshot_match.group(1))
+            entry_memory_snapshot_count = int(entry_snapshot_match.group(2))
+            entry_memory_snapshot_total_bytes = int(entry_snapshot_match.group(3))
+            continue
+
         extra_snapshot_match = EXTRA_SNAPSHOT_RE.match(raw_line)
         if extra_snapshot_match is not None:
             snapshot_base = int(extra_snapshot_match.group(2), 16)
@@ -208,6 +254,8 @@ def parse_trace(trace_path: Path) -> TraceMetadata:
         raise ValueError("轨迹里没有找到 XorTransform 向量状态快照")
     if vm_context_base is None or vm_context_bytes is None:
         raise ValueError("轨迹里没有找到 XorTransform VM 上下文快照")
+    if entry_memory_snapshot_file is None:
+        raise ValueError("轨迹里没有找到入口全量内存快照文件")
     if stack_pointer is None:
         raise ValueError("轨迹里没有找到 XorTransform 栈指针")
     if return_address is None:
@@ -218,6 +266,14 @@ def parse_trace(trace_path: Path) -> TraceMetadata:
         raise ValueError("轨迹里没有找到 XorTransform 栈快照")
     if not steps:
         raise ValueError("轨迹里没有找到可重放的步骤")
+
+    entry_memory_snapshots = load_entry_memory_snapshots(entry_memory_snapshot_file)
+    if entry_memory_snapshot_count is not None and len(entry_memory_snapshots) != entry_memory_snapshot_count:
+        raise ValueError("入口全量快照区域数与日志不一致")
+    if entry_memory_snapshot_total_bytes is not None:
+        total_bytes = sum(snapshot.size for snapshot in entry_memory_snapshots)
+        if total_bytes != entry_memory_snapshot_total_bytes:
+            raise ValueError("入口全量快照总字节数与日志不一致")
 
     return TraceMetadata(
         entry_address=entry_address,
@@ -233,6 +289,7 @@ def parse_trace(trace_path: Path) -> TraceMetadata:
         ),
         vm_context_base=vm_context_base,
         vm_context_bytes=vm_context_bytes,
+        entry_memory_snapshots=entry_memory_snapshots,
         extra_memory_snapshots=tuple(extra_memory_snapshots),
         stack_pointer=stack_pointer,
         return_address=return_address,

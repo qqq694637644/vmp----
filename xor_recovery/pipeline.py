@@ -21,6 +21,7 @@ def build_config(
     vm_context_base: int | None = None,
     vm_context_size: int | None = None,
     vm_context_bytes=None,
+    entry_memory_snapshots: tuple[MemorySnapshot, ...] = (),
     extra_memory_snapshots: tuple[MemorySnapshot, ...] = (),
 ) -> RecoveryConfig:
     vm_context_region = None
@@ -43,6 +44,7 @@ def build_config(
         stack_bytes=stack_bytes,
         vm_context_region=vm_context_region,
         vm_context_bytes=vm_context_bytes,
+        entry_memory_snapshots=entry_memory_snapshots,
         extra_memory_snapshots=extra_memory_snapshots,
         stack_size=stack_size,
     )
@@ -82,6 +84,7 @@ def build_config_from_trace(
         vm_context_base=trace.vm_context_base,
         vm_context_size=len(trace.vm_context_bytes),
         vm_context_bytes=trace.vm_context_bytes,
+        entry_memory_snapshots=trace.entry_memory_snapshots,
         extra_memory_snapshots=trace.extra_memory_snapshots,
     )
 

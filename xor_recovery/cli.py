@@ -59,6 +59,8 @@ def main() -> int:
     print(f"已读取轨迹: {trace_path}")
     print(f"函数入口: {format_hex(trace_metadata.entry_address)}")
     print(f"函数大小: {trace_metadata.function_size}")
+    entry_snapshot_total_bytes = sum(snapshot.size for snapshot in trace_metadata.entry_memory_snapshots)
+    print(f"入口全量内存快照: {len(trace_metadata.entry_memory_snapshots)} 页，总字节={entry_snapshot_total_bytes}")
     print("最小快照清单")
     for item in get_minimal_snapshot_items():
         print(f"  - {item}")

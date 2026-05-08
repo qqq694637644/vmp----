@@ -28,6 +28,13 @@ struct Breakpoint
     bool armed = false;
 };
 
+struct SnapshotRegion
+{
+    DWORD64 base = 0;
+    SIZE_T size = 0;
+    std::vector<BYTE> bytes;
+};
+
 struct TraceState
 {
     HANDLE process = nullptr;
@@ -41,6 +48,7 @@ struct TraceState
     std::uint32_t keyValue = 0;
     DWORD64 resultValue = 0;
     std::vector<BYTE> stackBytes;
+    std::wstring entrySnapshotPath;
     std::vector<SnapshotRegion> extraSnapshots;
     Breakpoint entryBreakpoint;
     bool tracing = false;
@@ -52,13 +60,6 @@ struct CapturedThreadContext
     std::vector<BYTE> buffer;
     PCONTEXT context = nullptr;
     DWORD64 xstateMask = 0;
-};
-
-struct SnapshotRegion
-{
-    DWORD64 base = 0;
-    SIZE_T size = 0;
-    std::vector<BYTE> bytes;
 };
 
 std::array<BYTE, 4> DwordToBytes(std::uint32_t value)
@@ -74,6 +75,11 @@ std::array<BYTE, 4> DwordToBytes(std::uint32_t value)
 bool ReadProcessBytes(HANDLE process, DWORD64 address, BYTE *buffer, SIZE_T length, SIZE_T &readCount);
 std::string ToHex64(DWORD64 value);
 std::string ToHex32(DWORD value);
+std::string WideToUtf8(const std::wstring &text);
+std::wstring ResolveAbsolutePath(const std::wstring &path);
+bool IsReadableProtection(DWORD protect);
+void WriteFileAll(HANDLE file, const void *data, SIZE_T size);
+void CaptureFullMemorySnapshotFile(HANDLE process, const std::wstring &snapshotPath, std::size_t &regionCount, std::uint64_t &totalBytes);
 void PrintLine(const std::string &text);
 [[noreturn]] void Fail(const std::string &message);
 CapturedThreadContext AcquireThreadContext(HANDLE thread);
@@ -97,7 +103,13 @@ void PrintEntryRegisters(const CONTEXT &context)
         u8"，R13=" + ToHex64(context.R13) +
         u8"，R14=" + ToHex64(context.R14) +
         u8"，R15=" + ToHex64(context.R15) +
-        u8"，EFLAGS=" + ToHex64(context.EFlags));
+        u8"，EFLAGS=" + ToHex64(context.EFlags) +
+        u8"，CS=" + ToHex64(context.SegCs) +
+        u8"，DS=" + ToHex64(context.SegDs) +
+        u8"，ES=" + ToHex64(context.SegEs) +
+        u8"，FS=" + ToHex64(context.SegFs) +
+        u8"，GS=" + ToHex64(context.SegGs) +
+        u8"，SS=" + ToHex64(context.SegSs));
 }
 
 CapturedThreadContext AcquireThreadContext(HANDLE thread)
@@ -150,6 +162,166 @@ std::string ToHex32(DWORD value)
     std::ostringstream stream;
     stream << "0x" << std::uppercase << std::hex << std::setw(8) << std::setfill('0') << value;
     return stream.str();
+}
+
+std::string WideToUtf8(const std::wstring &text)
+{
+    if (text.empty())
+    {
+        return {};
+    }
+
+    const int requiredSize = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (requiredSize <= 0)
+    {
+        Fail("宽字符转 UTF-8 失败");
+    }
+
+    std::string result(static_cast<std::size_t>(requiredSize - 1), '\0');
+    if (WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, result.data(), requiredSize, nullptr, nullptr) <= 0)
+    {
+        Fail("宽字符转 UTF-8 失败");
+    }
+
+    return result;
+}
+
+std::wstring ResolveAbsolutePath(const std::wstring &path)
+{
+    const DWORD requiredLength = GetFullPathNameW(path.c_str(), 0, nullptr, nullptr);
+    if (requiredLength == 0)
+    {
+        Fail("解析绝对路径失败");
+    }
+
+    std::wstring buffer(requiredLength, L'\0');
+    const DWORD written = GetFullPathNameW(path.c_str(), requiredLength, buffer.data(), nullptr);
+    if (written == 0 || written >= requiredLength)
+    {
+        Fail("解析绝对路径失败");
+    }
+
+    buffer.resize(written);
+    return buffer;
+}
+
+bool IsReadableProtection(DWORD protect)
+{
+    if ((protect & PAGE_GUARD) != 0 || (protect & PAGE_NOACCESS) != 0)
+    {
+        return false;
+    }
+
+    switch (protect & 0xFF)
+    {
+    case PAGE_READONLY:
+    case PAGE_READWRITE:
+    case PAGE_WRITECOPY:
+    case PAGE_EXECUTE_READ:
+    case PAGE_EXECUTE_READWRITE:
+    case PAGE_EXECUTE_WRITECOPY:
+        return true;
+    default:
+        return false;
+    }
+}
+
+void WriteFileAll(HANDLE file, const void *data, SIZE_T size)
+{
+    const BYTE *cursor = static_cast<const BYTE *>(data);
+    SIZE_T remaining = size;
+    while (remaining > 0)
+    {
+        const DWORD chunk = remaining > 0x100000 ? 0x100000 : static_cast<DWORD>(remaining);
+        DWORD written = 0;
+        if (WriteFile(file, cursor, chunk, &written, nullptr) == 0 || written != chunk)
+        {
+            Fail("写入全量快照文件失败");
+        }
+
+        cursor += written;
+        remaining -= written;
+    }
+}
+
+void CaptureFullMemorySnapshotFile(HANDLE process, const std::wstring &snapshotPath, std::size_t &regionCount, std::uint64_t &totalBytes)
+{
+    regionCount = 0;
+    totalBytes = 0;
+
+    HANDLE file = CreateFileW(
+        snapshotPath.c_str(),
+        GENERIC_WRITE,
+        0,
+        nullptr,
+        CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+    {
+        Fail("创建入口全量快照文件失败");
+    }
+
+    const char magic[4] = {'V', 'M', 'S', 'N'};
+    const std::uint32_t version = 1;
+    WriteFileAll(file, magic, sizeof(magic));
+    WriteFileAll(file, &version, sizeof(version));
+
+    SYSTEM_INFO systemInfo{};
+    GetSystemInfo(&systemInfo);
+    DWORD64 currentAddress = reinterpret_cast<DWORD64>(systemInfo.lpMinimumApplicationAddress);
+    const DWORD64 maxAddress = reinterpret_cast<DWORD64>(systemInfo.lpMaximumApplicationAddress);
+    std::array<BYTE, 0x10000> buffer{};
+
+    while (currentAddress <= maxAddress)
+    {
+        MEMORY_BASIC_INFORMATION memoryInfo{};
+        const SIZE_T querySize = VirtualQueryEx(process, reinterpret_cast<LPCVOID>(currentAddress), &memoryInfo, sizeof(memoryInfo));
+        if (querySize == 0)
+        {
+            CloseHandle(file);
+            Fail("查询进程内存布局失败");
+        }
+
+        const DWORD64 regionBase = reinterpret_cast<DWORD64>(memoryInfo.BaseAddress);
+        const DWORD64 regionEnd = regionBase + static_cast<DWORD64>(memoryInfo.RegionSize);
+        if (memoryInfo.RegionSize == 0 || regionEnd <= regionBase)
+        {
+            CloseHandle(file);
+            Fail("进程内存区域大小异常");
+        }
+
+        if (memoryInfo.State == MEM_COMMIT && IsReadableProtection(memoryInfo.Protect))
+        {
+            WriteFileAll(file, &regionBase, sizeof(regionBase));
+            const std::uint64_t regionSize = static_cast<std::uint64_t>(memoryInfo.RegionSize);
+            WriteFileAll(file, &regionSize, sizeof(regionSize));
+
+            SIZE_T remaining = memoryInfo.RegionSize;
+            DWORD64 regionOffset = 0;
+            while (remaining > 0)
+            {
+                const SIZE_T chunkSize = remaining > buffer.size() ? buffer.size() : remaining;
+                SIZE_T readCount = 0;
+                if (ReadProcessBytes(process, regionBase + regionOffset, buffer.data(), chunkSize, readCount) == false || readCount != chunkSize)
+                {
+                    CloseHandle(file);
+                    Fail("读取入口全量内存快照失败");
+                }
+
+                WriteFileAll(file, buffer.data(), chunkSize);
+                remaining -= chunkSize;
+                regionOffset += chunkSize;
+            }
+
+            ++regionCount;
+            totalBytes += regionSize;
+        }
+
+        currentAddress = regionEnd;
+    }
+
+    CloseHandle(file);
 }
 
 std::string BytesToHex(const BYTE *bytes, SIZE_T count)
@@ -472,6 +644,10 @@ void StartTrace(TraceState &state)
     const DWORD64 stackBase = context.Rsp - kStackSnapshotSize + 0x20;
     CaptureMemorySnapshot(state.process, stackBase, kStackSnapshotSize, state.stackBytes);
 
+    std::size_t entrySnapshotCount = 0;
+    std::uint64_t entrySnapshotTotalBytes = 0;
+    CaptureFullMemorySnapshotFile(state.process, state.entrySnapshotPath, entrySnapshotCount, entrySnapshotTotalBytes);
+
     state.plaintextValue = static_cast<std::uint32_t>(context.Rcx);
     state.keyValue = static_cast<std::uint32_t>(context.Rdx);
 
@@ -496,6 +672,10 @@ void StartTrace(TraceState &state)
     PrintLine(std::string(u8"已进入 XorTransform，返回地址=") + ToHex64(state.returnAddress));
     PrintEntryRegisters(context);
     PrintEntryVectorState(context, ymmHighRegisters.data(), ymmHighRegisters.size());
+    PrintLine(
+        std::string(u8"入口全量快照文件=") + WideToUtf8(state.entrySnapshotPath) +
+        u8"，区域数=" + std::to_string(entrySnapshotCount) +
+        u8"，总字节=" + std::to_string(entrySnapshotTotalBytes));
     PrintLine(std::string(u8"栈快照=") + BytesToHex(state.stackBytes.data(), state.stackBytes.size()));
     if (context.Rdi != context.R8)
     {
@@ -564,6 +744,7 @@ int wmain(int argc, wchar_t *argv[])
     std::wstring targetPath;
     std::vector<std::wstring> targetArgs;
     std::vector<SnapshotRegion> extraSnapshots;
+    std::wstring entrySnapshotPath;
 
     for (int index = 1; index < argc; ++index)
     {
@@ -628,6 +809,8 @@ int wmain(int argc, wchar_t *argv[])
         return 1;
     }
 
+    entrySnapshotPath = ResolveAbsolutePath(targetPath + L".entry.snap");
+
     std::wstring commandLine = QuoteArgument(targetPath);
     for (const std::wstring &argument : targetArgs)
     {
@@ -657,6 +840,7 @@ int wmain(int argc, wchar_t *argv[])
     TraceState state;
     state.process = processInfo.hProcess;
     state.thread = processInfo.hThread;
+    state.entrySnapshotPath = std::move(entrySnapshotPath);
     state.extraSnapshots = std::move(extraSnapshots);
 
     bool running = true;

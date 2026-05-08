@@ -119,6 +119,9 @@ def initialize_context(config: RecoveryConfig) -> TritonContext:
     apply_entry_registers(ctx, config)
     apply_entry_vector_state(ctx, config)
 
+    for snapshot in config.entry_memory_snapshots:
+        ctx.setConcreteMemoryAreaValue(snapshot.base, snapshot.bytes)
+
     stack_bytes = config.stack_bytes if config.stack_bytes is not None else b"\x00" * config.stack_size
     if len(stack_bytes) != config.stack_size:
         raise ValueError("入口栈快照长度与配置不一致")
