@@ -21,18 +21,16 @@ def format_preview(values: tuple[str, ...], limit: int = 12) -> str:
     return f"{preview} ... (+{len(values) - limit})"
 
 
+def format_step_preview(step) -> str:
+    opcode_text = " ".join(f"{byte:02X}" for byte in step.opcode)
+    line_text = f" | 行号={step.line_number}" if step.line_number is not None else ""
+    return f"#{step.index:06d} RIP={format_hex(step.address)} | 字节={opcode_text}{line_text}"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="从 VMP trace 中做两遍分析并还原算法公式。")
     parser.add_argument("trace_file", help="trace_xor.exe 的输出文件")
-    parser.add_argument("--context-base", default=None)
-    parser.add_argument("--context-size", default=None)
     return parser
-
-
-def parse_hex(value: str | None) -> int | None:
-    if value is None:
-        return None
-    return int(value, 16)
 
 
 def configure_utf8_console() -> None:
@@ -49,22 +47,23 @@ def main() -> int:
     from .trace_io import parse_trace
 
     trace_metadata = parse_trace(trace_path)
-    config = build_config_from_trace(
-        trace_metadata,
-        context_base=parse_hex(args.context_base),
-        context_size=parse_hex(args.context_size),
-    )
+    config = build_config_from_trace(trace_metadata)
 
-    result = recover(trace_path, config)
-
-    print(f"已读取轨迹: {result.trace_path}")
-    print(f"函数入口: {format_hex(result.entry_address)}")
-    print(f"函数大小: {result.function_size}")
+    print(f"已读取轨迹: {trace_path}")
+    print(f"函数入口: {format_hex(trace_metadata.entry_address)}")
+    print(f"函数大小: {trace_metadata.function_size}")
     print("最小快照清单")
     for item in get_minimal_snapshot_items():
         print(f"  - {item}")
+
+    result = recover(trace_path, config)
     print("第一遍：动态污点分析")
     print(f"  污点步骤数: {len(result.taint.tainted_steps)}")
+    print("  关键指令:")
+    for step in result.taint.tainted_steps[:12]:
+        print(f"    {format_step_preview(step)}")
+    if len(result.taint.tainted_steps) > 12:
+        print(f"    ... 省略 {len(result.taint.tainted_steps) - 12} 项")
     print(f"  关键寄存器: {format_preview(result.taint.tainted_registers)}")
     print(f"  关键内存: {format_preview(result.taint.tainted_memory)}")
     print(f"  关键上下文偏移: {format_preview(result.taint.context_hits)}")

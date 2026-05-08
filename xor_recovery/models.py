@@ -46,6 +46,7 @@ class EntryVectorState:
     mxcsr: int
     mxcsr_mask: int
     xmm_registers: tuple[bytes, ...]
+    ymm_high_registers: tuple[bytes, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,8 @@ class TraceMetadata:
     entry_arguments: EntryArguments | None = None
     entry_registers: EntryRegisters | None = None
     entry_vector_state: EntryVectorState | None = None
+    vm_context_base: int | None = None
+    vm_context_bytes: bytes | None = None
     stack_pointer: int | None = None
     return_address: int | None = None
     result_value: int | None = None
@@ -92,7 +95,8 @@ class RecoveryConfig:
     entry_registers: EntryRegisters | None = None
     entry_vector_state: EntryVectorState | None = None
     stack_bytes: bytes | None = None
-    context_region: MemoryRegion | None = None
+    vm_context_region: MemoryRegion | None = None
+    vm_context_bytes: bytes | None = None
     stack_size: int = 0x2000
 
     @property
@@ -101,8 +105,12 @@ class RecoveryConfig:
 
     def tracked_regions(self) -> tuple[MemoryRegion, ...]:
         regions = [MemoryRegion("stack", self.stack_base, self.stack_size)]
-        if self.context_region is not None:
-            regions.append(self.context_region)
+        seen = {(self.stack_base, self.stack_size)}
+        if self.vm_context_region is not None:
+            key = (self.vm_context_region.base, self.vm_context_region.size)
+            if key not in seen:
+                regions.append(self.vm_context_region)
+                seen.add(key)
         return tuple(regions)
 
 

@@ -9,7 +9,7 @@ from .triton_runtime import initialize_context, replay_trace
 
 def render_formula(ctx: TritonContext, ast_node) -> object:
     # 这里只做 Triton 的内置简化，不再自己写 AST 化简器。
-    return ctx.simplify(ast_node, False, False)
+    return ctx.simplify(ast_node, True)
 
 
 def recover_formulas(trace_path, config: RecoveryConfig, taint_report: TaintAnalysisResult) -> tuple[int, int, tuple[FormulaResult, ...]]:

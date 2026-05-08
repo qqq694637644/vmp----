@@ -10,6 +10,7 @@ from .triton_runtime import initialize_context, replay_trace
 
 
 REF_RE = re.compile(r"ref!(\d+)")
+VM_CONTEXT_PREFIX = "vm_context+"
 
 
 def describe_address(address: int, regions) -> str:
@@ -27,6 +28,11 @@ def describe_origin(origin, regions) -> str:
     if hasattr(origin, "getName"):
         return f"reg:{origin.getName()}"
     return str(origin)
+
+
+def is_vm_context_label(label: str) -> bool:
+    # 只把 VM 上下文区域当作关键上下文偏移，避免把栈地址误报成上下文命中。
+    return label.startswith(VM_CONTEXT_PREFIX)
 
 
 def extract_reference_ids(ast_text: str) -> tuple[int, ...]:
@@ -51,11 +57,11 @@ def run_taint_analysis(trace_path, config: RecoveryConfig) -> tuple[int, int, Ta
 
         for memory_access, _ in instruction.getLoadAccess():
             label = describe_address(memory_access.getAddress(), tracked_regions)
-            if label.startswith("context+"):
+            if is_vm_context_label(label):
                 context_hits.add(label)
         for memory_access, _ in instruction.getStoreAccess():
             label = describe_address(memory_access.getAddress(), tracked_regions)
-            if label.startswith("context+"):
+            if is_vm_context_label(label):
                 context_hits.add(label)
 
         for symbolic_expression in instruction.getSymbolicExpressions():

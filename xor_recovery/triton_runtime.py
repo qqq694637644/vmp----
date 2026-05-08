@@ -40,27 +40,13 @@ def zero_general_registers(ctx: TritonContext) -> None:
 
 def zero_vector_registers(ctx: TritonContext) -> None:
     # 向量寄存器和 MXCSR 也是执行语义的一部分，不能沿用 Triton 上一次残留的状态。
-    for reg_const in (
-        REG.X86_64.MXCSR,
-        REG.X86_64.MXCSR_MASK,
-        REG.X86_64.XMM0,
-        REG.X86_64.XMM1,
-        REG.X86_64.XMM2,
-        REG.X86_64.XMM3,
-        REG.X86_64.XMM4,
-        REG.X86_64.XMM5,
-        REG.X86_64.XMM6,
-        REG.X86_64.XMM7,
-        REG.X86_64.XMM8,
-        REG.X86_64.XMM9,
-        REG.X86_64.XMM10,
-        REG.X86_64.XMM11,
-        REG.X86_64.XMM12,
-        REG.X86_64.XMM13,
-        REG.X86_64.XMM14,
-        REG.X86_64.XMM15,
-    ):
-        ctx.setConcreteRegisterValue(make_register(ctx, reg_const), 0)
+    ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.MXCSR), 0)
+    ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.MXCSR_MASK), 0)
+    for index in range(32):
+        xmm_register = getattr(REG.X86_64, f"XMM{index}")
+        ymm_register = getattr(REG.X86_64, f"YMM{index}")
+        ctx.setConcreteRegisterValue(make_register(ctx, xmm_register), 0)
+        ctx.setConcreteRegisterValue(make_register(ctx, ymm_register), 0)
 
 
 def apply_entry_registers(ctx: TritonContext, config: RecoveryConfig) -> None:
@@ -99,11 +85,18 @@ def apply_entry_vector_state(ctx: TritonContext, config: RecoveryConfig) -> None
     ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.MXCSR), vector_state.mxcsr)
     ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.MXCSR_MASK), vector_state.mxcsr_mask)
     if len(vector_state.xmm_registers) != 16:
-        raise ValueError("入口向量寄存器数量不正确")
+        raise ValueError("入口 XMM 寄存器数量不正确")
+    if len(vector_state.ymm_high_registers) != 16:
+        raise ValueError("入口 YMM 高位寄存器数量不正确")
 
     for index, xmm_bytes in enumerate(vector_state.xmm_registers):
         xmm_register = getattr(REG.X86_64, f"XMM{index}")
         ctx.setConcreteRegisterValue(make_register(ctx, xmm_register), int.from_bytes(xmm_bytes, byteorder="little"))
+
+    for index, ymm_high_bytes in enumerate(vector_state.ymm_high_registers):
+        ymm_register = getattr(REG.X86_64, f"YMM{index}")
+        ymm_bytes = vector_state.xmm_registers[index] + ymm_high_bytes
+        ctx.setConcreteRegisterValue(make_register(ctx, ymm_register), int.from_bytes(ymm_bytes, byteorder="little"))
 
 
 def initialize_context(config: RecoveryConfig) -> TritonContext:
@@ -121,8 +114,12 @@ def initialize_context(config: RecoveryConfig) -> TritonContext:
     stack_top = config.entry_registers.rsp if config.entry_registers is not None else config.stack_base + config.stack_size - 0x20
     ctx.setConcreteMemoryAreaValue(stack_top, config.return_address.to_bytes(8, byteorder="little"))
 
-    if config.context_region is not None:
-        ctx.setConcreteMemoryAreaValue(config.context_region.base, b"\x00" * config.context_region.size)
+    if config.vm_context_region is not None:
+        if config.vm_context_bytes is None:
+            raise ValueError("VM 上下文快照缺失，无法初始化 Triton 上下文")
+        if len(config.vm_context_bytes) != config.vm_context_region.size:
+            raise ValueError("VM 上下文快照长度与配置不一致")
+        ctx.setConcreteMemoryAreaValue(config.vm_context_region.base, config.vm_context_bytes)
 
     ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.RCX), config.plaintext_value)
     ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.RDX), config.key_value)

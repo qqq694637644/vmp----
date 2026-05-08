@@ -18,16 +18,17 @@ def build_config(
     entry_vector_state=None,
     stack_bytes=None,
     stack_size: int = 0x2000,
-    context_base: int | None = None,
-    context_size: int | None = None,
+    vm_context_base: int | None = None,
+    vm_context_size: int | None = None,
+    vm_context_bytes=None,
 ) -> RecoveryConfig:
-    context_region = None
-    if context_base is not None:
-        if context_size is None:
-            raise ValueError("已指定 context_base，但没有指定 context_size")
-        context_region = MemoryRegion("context", context_base, context_size)
-    elif context_size is not None:
-        raise ValueError("已指定 context_size，但没有指定 context_base")
+    vm_context_region = None
+    if vm_context_base is not None:
+        if vm_context_size is None:
+            raise ValueError("已指定 vm_context_base，但没有指定 vm_context_size")
+        vm_context_region = MemoryRegion("vm_context", vm_context_base, vm_context_size)
+    elif vm_context_size is not None:
+        raise ValueError("已指定 vm_context_size，但没有指定 vm_context_base")
 
     return RecoveryConfig(
         plaintext_value=plaintext_value,
@@ -39,15 +40,14 @@ def build_config(
         entry_registers=entry_registers,
         entry_vector_state=entry_vector_state,
         stack_bytes=stack_bytes,
-        context_region=context_region,
+        vm_context_region=vm_context_region,
+        vm_context_bytes=vm_context_bytes,
         stack_size=stack_size,
     )
 
 
 def build_config_from_trace(
     trace: TraceMetadata,
-    context_base: int | None = None,
-    context_size: int | None = None,
     stack_size: int = 0x2000,
 ) -> RecoveryConfig:
     if trace.entry_arguments is None:
@@ -56,6 +56,10 @@ def build_config_from_trace(
         raise ValueError("轨迹里没有栈指针，无法构建恢复配置")
     if trace.return_address is None:
         raise ValueError("轨迹里没有返回地址，无法构建恢复配置")
+    if trace.vm_context_base is None:
+        raise ValueError("轨迹里没有 VM 上下文基址，无法构建恢复配置")
+    if trace.vm_context_bytes is None:
+        raise ValueError("轨迹里没有上下文快照，无法构建恢复配置")
 
     arguments = trace.entry_arguments
 
@@ -73,8 +77,9 @@ def build_config_from_trace(
         entry_vector_state=trace.entry_vector_state,
         stack_bytes=trace.stack_bytes,
         stack_size=stack_size,
-        context_base=context_base,
-        context_size=context_size,
+        vm_context_base=trace.vm_context_base,
+        vm_context_size=len(trace.vm_context_bytes),
+        vm_context_bytes=trace.vm_context_bytes,
     )
 
 

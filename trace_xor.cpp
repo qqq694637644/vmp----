@@ -17,6 +17,7 @@ namespace
 constexpr DWORD kTrapFlag = 0x100;
 constexpr BYTE kInt3Opcode = 0xCC;
 constexpr SIZE_T kStackSnapshotSize = 0x2000;
+constexpr SIZE_T kContextSnapshotSize = 0x400;
 
 struct Breakpoint
 {
@@ -44,6 +45,13 @@ struct TraceState
     std::uint64_t stepIndex = 0;
 };
 
+struct CapturedThreadContext
+{
+    std::vector<BYTE> buffer;
+    PCONTEXT context = nullptr;
+    DWORD64 xstateMask = 0;
+};
+
 std::array<BYTE, 4> DwordToBytes(std::uint32_t value)
 {
     return {
@@ -54,8 +62,12 @@ std::array<BYTE, 4> DwordToBytes(std::uint32_t value)
     };
 }
 
+bool ReadProcessBytes(HANDLE process, DWORD64 address, BYTE *buffer, SIZE_T length, SIZE_T &readCount);
 std::string ToHex64(DWORD64 value);
+std::string ToHex32(DWORD value);
 void PrintLine(const std::string &text);
+[[noreturn]] void Fail(const std::string &message);
+CapturedThreadContext AcquireThreadContext(HANDLE thread);
 
 void PrintEntryRegisters(const CONTEXT &context)
 {
@@ -79,10 +91,55 @@ void PrintEntryRegisters(const CONTEXT &context)
         u8"，EFLAGS=" + ToHex64(context.EFlags));
 }
 
+CapturedThreadContext AcquireThreadContext(HANDLE thread)
+{
+    constexpr DWORD kContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_FLOATING_POINT | CONTEXT_XSTATE;
+
+    CapturedThreadContext captured;
+    DWORD contextLength = 0;
+    if (InitializeContext(nullptr, kContextFlags, &captured.context, &contextLength) == 0)
+    {
+        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+        {
+            Fail("初始化线程上下文长度失败");
+        }
+    }
+
+    captured.buffer.resize(contextLength);
+    if (InitializeContext(captured.buffer.data(), kContextFlags, &captured.context, &contextLength) == 0)
+    {
+        Fail("初始化线程上下文失败");
+    }
+
+    captured.context->ContextFlags = kContextFlags;
+    if (SetXStateFeaturesMask(captured.context, GetEnabledXStateFeatures()) == 0)
+    {
+        Fail("设置 XState 掩码失败");
+    }
+    if (GetThreadContext(thread, captured.context) == 0)
+    {
+        Fail("获取线程上下文失败");
+    }
+
+    if (GetXStateFeaturesMask(captured.context, &captured.xstateMask) == 0)
+    {
+        Fail("读取 XState 掩码失败");
+    }
+
+    return captured;
+}
+
 std::string ToHex64(DWORD64 value)
 {
     std::ostringstream stream;
     stream << "0x" << std::uppercase << std::hex << std::setw(16) << std::setfill('0') << value;
+    return stream.str();
+}
+
+std::string ToHex32(DWORD value)
+{
+    std::ostringstream stream;
+    stream << "0x" << std::uppercase << std::hex << std::setw(8) << std::setfill('0') << value;
     return stream.str();
 }
 
@@ -99,6 +156,68 @@ std::string BytesToHex(const BYTE *bytes, SIZE_T count)
         stream << std::setw(2) << static_cast<unsigned int>(bytes[index]);
     }
     return stream.str();
+}
+
+std::string FormatRegisterBlock(const std::string &prefix, const M128A *registers, std::size_t count)
+{
+    std::ostringstream stream;
+    stream << prefix;
+    for (std::size_t index = 0; index < count; ++index)
+    {
+        if (index != 0)
+        {
+            stream << u8"，";
+        }
+
+        stream << (prefix.find("XMM") != std::string::npos ? "XMM" : "YMM") << index << "="
+               << BytesToHex(reinterpret_cast<const BYTE *>(&registers[index]), sizeof(M128A));
+    }
+
+    return stream.str();
+}
+
+void PrintEntryVectorState(const CONTEXT &context, const M128A *ymmRegisters, std::size_t ymmCount)
+{
+    PrintLine(std::string(u8"浮点状态：MXCSR=") + ToHex32(context.FltSave.MxCsr) + u8"，MXCSR_MASK=" + ToHex32(context.FltSave.MxCsr_Mask));
+    const std::array<M128A, 16> xmmRegisters = {
+        context.Xmm0,
+        context.Xmm1,
+        context.Xmm2,
+        context.Xmm3,
+        context.Xmm4,
+        context.Xmm5,
+        context.Xmm6,
+        context.Xmm7,
+        context.Xmm8,
+        context.Xmm9,
+        context.Xmm10,
+        context.Xmm11,
+        context.Xmm12,
+        context.Xmm13,
+        context.Xmm14,
+        context.Xmm15,
+    };
+
+    PrintLine(FormatRegisterBlock(u8"XMM寄存器：", xmmRegisters.data(), xmmRegisters.size()));
+    PrintLine(FormatRegisterBlock(u8"YMM高位：", ymmRegisters, ymmCount));
+}
+
+void CaptureVmContextSnapshot(HANDLE process, DWORD64 base, std::vector<BYTE> &snapshotBytes)
+{
+    if (base == 0)
+    {
+        Fail("VM 上下文基址为空");
+    }
+
+    snapshotBytes.resize(kContextSnapshotSize);
+    SIZE_T readCount = 0;
+    if (ReadProcessBytes(process, base, snapshotBytes.data(), kContextSnapshotSize, readCount) == false || readCount != kContextSnapshotSize)
+    {
+        Fail("读取 VM 上下文快照失败");
+    }
+
+    PrintLine(std::string(u8"VM上下文基址=") + ToHex64(base));
+    PrintLine(std::string(u8"VM上下文快照=") + BytesToHex(snapshotBytes.data(), snapshotBytes.size()));
 }
 
 void PrintLine(const std::string &text)
@@ -305,18 +424,30 @@ void LogInstruction(TraceState &state, DWORD64 address)
 
 void StartTrace(TraceState &state)
 {
-    CONTEXT context{};
-    context.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
-    if (GetThreadContext(state.thread, &context) == 0)
-    {
-        Fail("获取线程上下文失败");
-    }
+    CapturedThreadContext threadContext = AcquireThreadContext(state.thread);
+    CONTEXT &context = *threadContext.context;
 
     state.returnAddress = 0;
     SIZE_T readCount = 0;
     if (ReadProcessBytes(state.process, context.Rsp, reinterpret_cast<BYTE *>(&state.returnAddress), sizeof(state.returnAddress), readCount) == false || readCount != sizeof(state.returnAddress))
     {
         Fail("读取返回地址失败");
+    }
+
+    std::array<M128A, 16> ymmHighRegisters{};
+    DWORD ymmFeatureLength = 0;
+    if ((threadContext.xstateMask & XSTATE_MASK_AVX) != 0)
+    {
+        M128A *ymmRegisters = static_cast<M128A *>(LocateXStateFeature(threadContext.context, XSTATE_AVX, &ymmFeatureLength));
+        if (ymmRegisters == nullptr || ymmFeatureLength < sizeof(M128A) * ymmHighRegisters.size())
+        {
+            Fail("读取 AVX 高位状态失败");
+        }
+
+        for (std::size_t index = 0; index < ymmHighRegisters.size(); ++index)
+        {
+            ymmHighRegisters[index] = ymmRegisters[index];
+        }
     }
 
     const DWORD64 stackBase = context.Rsp - kStackSnapshotSize + 0x20;
@@ -336,7 +467,11 @@ void StartTrace(TraceState &state)
 
     context.Rip = state.entryBreakpoint.address;
     context.EFlags |= kTrapFlag;
-    if (SetThreadContext(state.thread, &context) == 0)
+    if (SetXStateFeaturesMask(threadContext.context, threadContext.xstateMask) == 0)
+    {
+        Fail("恢复 XState 掩码失败");
+    }
+    if (SetThreadContext(state.thread, threadContext.context) == 0)
     {
         Fail("设置线程上下文失败");
     }
@@ -345,7 +480,14 @@ void StartTrace(TraceState &state)
     state.stepIndex = 1;
     PrintLine(std::string(u8"已进入 XorTransform，返回地址=") + ToHex64(state.returnAddress));
     PrintEntryRegisters(context);
+    PrintEntryVectorState(context, ymmHighRegisters.data(), ymmHighRegisters.size());
     PrintLine(std::string(u8"栈快照=") + BytesToHex(state.stackBytes.data(), state.stackBytes.size()));
+    if (context.Rdi != context.R8)
+    {
+        Fail("RDI 和 R8 的 VM 上下文基址不一致");
+    }
+    std::vector<BYTE> vmContextBytes;
+    CaptureVmContextSnapshot(state.process, context.Rdi, vmContextBytes);
     PrintLine(
         std::string(u8"参数：RSP=") + ToHex64(context.Rsp) +
         u8"，RCX=" + ToHex64(context.Rcx) +
@@ -357,12 +499,8 @@ void StartTrace(TraceState &state)
 
 void HandleSingleStep(TraceState &state)
 {
-    CONTEXT context{};
-    context.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
-    if (GetThreadContext(state.thread, &context) == 0)
-    {
-        Fail("获取单步上下文失败");
-    }
+    CapturedThreadContext threadContext = AcquireThreadContext(state.thread);
+    CONTEXT &context = *threadContext.context;
 
     if (context.Rip == state.returnAddress)
     {
@@ -378,7 +516,11 @@ void HandleSingleStep(TraceState &state)
     LogInstruction(state, context.Rip);
 
     context.EFlags |= kTrapFlag;
-    if (SetThreadContext(state.thread, &context) == 0)
+    if (SetXStateFeaturesMask(threadContext.context, threadContext.xstateMask) == 0)
+    {
+        Fail("恢复 XState 掩码失败");
+    }
+    if (SetThreadContext(state.thread, threadContext.context) == 0)
     {
         Fail("恢复单步标志失败");
     }

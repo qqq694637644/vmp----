@@ -26,14 +26,22 @@ class RecoveryPipelineTest(unittest.TestCase):
         self.assertGreater(function_size, 0)
         self.assertGreater(len(steps), 0)
         self.assertIsNotNone(trace_metadata.entry_arguments)
+        self.assertIsNotNone(trace_metadata.entry_vector_state)
+        self.assertIsNotNone(trace_metadata.vm_context_base)
+        self.assertIsNotNone(trace_metadata.vm_context_bytes)
         self.assertIsNotNone(trace_metadata.stack_pointer)
         self.assertIsNotNone(trace_metadata.return_address)
         self.assertIsNotNone(trace_metadata.result_bytes)
         self.assertIsNotNone(trace_metadata.result_value)
+        self.assertEqual(len(trace_metadata.entry_vector_state.xmm_registers), 16)
+        self.assertEqual(len(trace_metadata.entry_vector_state.ymm_high_registers), 16)
+        self.assertEqual(len(trace_metadata.vm_context_bytes), 0x400)
 
         config = build_config_from_trace(
             trace_metadata,
         )
+        self.assertIsNotNone(config.entry_vector_state)
+        self.assertIsNotNone(config.vm_context_region)
         result = recover(trace_path, config)
 
         self.assertEqual(len(result.formulas), 4)
