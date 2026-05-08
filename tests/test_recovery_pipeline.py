@@ -11,6 +11,22 @@ ROOT = Path(__file__).resolve().parents[1]
 BUILD_DIR = ROOT / "build"
 
 
+def rotl32(value: int, shift: int) -> int:
+    shift &= 31
+    value &= 0xFFFFFFFF
+    return ((value << shift) | (value >> ((32 - shift) & 31))) & 0xFFFFFFFF
+
+
+def reference_transform(plaintext: int, key: int) -> int:
+    step1 = (plaintext + 0x13579BDF) & 0xFFFFFFFF
+    step2 = rotl32(key ^ 0x2468ACE0, 7)
+    step3 = step1 ^ step2
+    step4 = rotl32(plaintext, 11)
+    step5 = (step3 + step4) & 0xFFFFFFFF
+    step6 = step5 ^ ((key + 0x0F1E2D3C) & 0xFFFFFFFF)
+    return rotl32(step6, 3) ^ 0xA5A5A5A5
+
+
 class RecoveryPipelineTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -51,17 +67,18 @@ class RecoveryPipelineTest(unittest.TestCase):
         self.assertTrue(result.taint.sink_reached)
         self.assertTrue(result.taint.sink_tainted)
         self.assertEqual(result.taint.replayed_result_value, result.taint.result_value)
-        for formula in result.formulas:
-            self.assertIn("bvxor", formula.formula_text)
-            self.assertIn("extract", formula.formula_text)
         self.assertEqual(
             [formula.byte_offset for formula in result.formulas],
             [0, 1, 2, 3],
         )
-        expected_value = trace_metadata.entry_arguments.plaintext_value ^ trace_metadata.entry_arguments.key_value
+        expected_value = reference_transform(
+            trace_metadata.entry_arguments.plaintext_value,
+            trace_metadata.entry_arguments.key_value,
+        )
         expected_bytes = expected_value.to_bytes(4, byteorder="little")
         self.assertEqual(result.taint.result_value, trace_metadata.result_value)
         self.assertEqual(result.taint.result_bytes, trace_metadata.result_bytes)
+        self.assertEqual(result.taint.result_value, expected_value)
         self.assertEqual([formula.evaluated_value for formula in result.formulas], list(expected_bytes))
 
 
