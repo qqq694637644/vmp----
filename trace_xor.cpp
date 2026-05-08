@@ -8,6 +8,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #pragma comment(lib, "Dbghelp.lib")
@@ -40,6 +41,7 @@ struct TraceState
     std::uint32_t keyValue = 0;
     DWORD64 resultValue = 0;
     std::vector<BYTE> stackBytes;
+    std::vector<SnapshotRegion> extraSnapshots;
     Breakpoint entryBreakpoint;
     bool tracing = false;
     std::uint64_t stepIndex = 0;
@@ -50,6 +52,13 @@ struct CapturedThreadContext
     std::vector<BYTE> buffer;
     PCONTEXT context = nullptr;
     DWORD64 xstateMask = 0;
+};
+
+struct SnapshotRegion
+{
+    DWORD64 base = 0;
+    SIZE_T size = 0;
+    std::vector<BYTE> bytes;
 };
 
 std::array<BYTE, 4> DwordToBytes(std::uint32_t value)
@@ -202,22 +211,32 @@ void PrintEntryVectorState(const CONTEXT &context, const M128A *ymmRegisters, st
     PrintLine(FormatRegisterBlock(u8"YMM高位：", ymmRegisters, ymmCount));
 }
 
-void CaptureVmContextSnapshot(HANDLE process, DWORD64 base, std::vector<BYTE> &snapshotBytes)
+void CaptureMemorySnapshot(HANDLE process, DWORD64 base, SIZE_T size, std::vector<BYTE> &snapshotBytes)
 {
     if (base == 0)
     {
-        Fail("VM 上下文基址为空");
+        Fail("内存快照基址为空");
     }
 
-    snapshotBytes.resize(kContextSnapshotSize);
+    snapshotBytes.resize(size);
     SIZE_T readCount = 0;
-    if (ReadProcessBytes(process, base, snapshotBytes.data(), kContextSnapshotSize, readCount) == false || readCount != kContextSnapshotSize)
+    if (ReadProcessBytes(process, base, snapshotBytes.data(), size, readCount) == false || readCount != size)
     {
-        Fail("读取 VM 上下文快照失败");
+        Fail("读取内存快照失败");
     }
+}
 
+void PrintVmContextSnapshot(DWORD64 base, const std::vector<BYTE> &snapshotBytes)
+{
     PrintLine(std::string(u8"VM上下文基址=") + ToHex64(base));
     PrintLine(std::string(u8"VM上下文快照=") + BytesToHex(snapshotBytes.data(), snapshotBytes.size()));
+}
+
+void PrintExtraSnapshot(std::size_t index, DWORD64 base, SIZE_T size, const std::vector<BYTE> &snapshotBytes)
+{
+    std::ostringstream stream;
+    stream << u8"附加快照[" << index << u8"]：基址=" << ToHex64(base) << u8"，大小=" << size << u8"，快照=" << BytesToHex(snapshotBytes.data(), snapshotBytes.size());
+    PrintLine(stream.str());
 }
 
 void PrintLine(const std::string &text)
@@ -451,11 +470,7 @@ void StartTrace(TraceState &state)
     }
 
     const DWORD64 stackBase = context.Rsp - kStackSnapshotSize + 0x20;
-    state.stackBytes.resize(kStackSnapshotSize);
-    if (ReadProcessBytes(state.process, stackBase, state.stackBytes.data(), kStackSnapshotSize, readCount) == false || readCount != kStackSnapshotSize)
-    {
-        Fail("读取栈快照失败");
-    }
+    CaptureMemorySnapshot(state.process, stackBase, kStackSnapshotSize, state.stackBytes);
 
     state.plaintextValue = static_cast<std::uint32_t>(context.Rcx);
     state.keyValue = static_cast<std::uint32_t>(context.Rdx);
@@ -487,7 +502,14 @@ void StartTrace(TraceState &state)
         Fail("RDI 和 R8 的 VM 上下文基址不一致");
     }
     std::vector<BYTE> vmContextBytes;
-    CaptureVmContextSnapshot(state.process, context.Rdi, vmContextBytes);
+    CaptureMemorySnapshot(state.process, context.Rdi, kContextSnapshotSize, vmContextBytes);
+    PrintVmContextSnapshot(context.Rdi, vmContextBytes);
+    for (std::size_t index = 0; index < state.extraSnapshots.size(); ++index)
+    {
+        SnapshotRegion &snapshot = state.extraSnapshots[index];
+        CaptureMemorySnapshot(state.process, snapshot.base, snapshot.size, snapshot.bytes);
+        PrintExtraSnapshot(index, snapshot.base, snapshot.size, snapshot.bytes);
+    }
     PrintLine(
         std::string(u8"参数：RSP=") + ToHex64(context.Rsp) +
         u8"，RCX=" + ToHex64(context.Rcx) +
@@ -534,13 +556,14 @@ int wmain(int argc, wchar_t *argv[])
 
     if (argc < 2)
     {
-        PrintLine(u8"用法：trace_xor.exe --symbols <带符号模块> <目标程序> [参数...]");
+        PrintLine(u8"用法：trace_xor.exe --symbols <带符号模块> [--snapshot <基址> <大小>] <目标程序> [参数...]");
         return 1;
     }
 
     std::wstring symbolPath;
     std::wstring targetPath;
     std::vector<std::wstring> targetArgs;
+    std::vector<SnapshotRegion> extraSnapshots;
 
     for (int index = 1; index < argc; ++index)
     {
@@ -557,9 +580,30 @@ int wmain(int argc, wchar_t *argv[])
             continue;
         }
 
+        if (argument == L"--snapshot")
+        {
+            if (index + 2 >= argc)
+            {
+                PrintLine(u8"错误：--snapshot 后面必须跟一个基址和一个大小");
+                return 1;
+            }
+
+            SnapshotRegion snapshot;
+            snapshot.base = std::stoull(argv[++index], nullptr, 0);
+            snapshot.size = static_cast<SIZE_T>(std::stoull(argv[++index], nullptr, 0));
+            if (snapshot.base == 0 || snapshot.size == 0)
+            {
+                PrintLine(u8"错误：--snapshot 的基址和大小都必须大于 0");
+                return 1;
+            }
+
+            extraSnapshots.push_back(std::move(snapshot));
+            continue;
+        }
+
         if (argument == L"--help" || argument == L"-h" || argument == L"/?")
         {
-            PrintLine(u8"用法：trace_xor.exe --symbols <带符号模块> <目标程序> [参数...]");
+            PrintLine(u8"用法：trace_xor.exe --symbols <带符号模块> [--snapshot <基址> <大小>] <目标程序> [参数...]");
             return 0;
         }
 
@@ -613,6 +657,7 @@ int wmain(int argc, wchar_t *argv[])
     TraceState state;
     state.process = processInfo.hProcess;
     state.thread = processInfo.hThread;
+    state.extraSnapshots = std::move(extraSnapshots);
 
     bool running = true;
 

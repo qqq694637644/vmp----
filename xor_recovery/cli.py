@@ -29,6 +29,11 @@ def format_step_preview(step) -> str:
     return f"#{step.index:06d} RIP={format_hex(step.address)} | 字节={opcode_text}{line_text}"
 
 
+def format_region(region) -> str:
+    end_address = region.base + region.size - 1
+    return f"{format_hex(region.base)}-{format_hex(end_address)} size={region.size}"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="从 VMP trace 中做两遍分析并还原算法公式。")
     parser.add_argument("trace_file", help="trace_xor.exe 的输出文件")
@@ -69,6 +74,18 @@ def main() -> int:
     print(f"  关键寄存器: {format_preview(taint_report.tainted_registers)}")
     print(f"  关键内存: {format_preview(taint_report.tainted_memory)}")
     print(f"  关键上下文偏移: {format_preview(taint_report.context_hits)}")
+    print("  补状态缺口:")
+    if taint_report.missing_memory_regions:
+        for region in taint_report.missing_memory_regions[:12]:
+            print(f"    内存: {format_region(region)}")
+        if len(taint_report.missing_memory_regions) > 12:
+            print(f"    ... 省略 {len(taint_report.missing_memory_regions) - 12} 项")
+    else:
+        print("    内存: 无")
+    if taint_report.missing_registers:
+        print(f"    寄存器: {format_preview(taint_report.missing_registers)}")
+    else:
+        print("    寄存器: 无")
     print(
         f"  最终汇点: 期望 RAX={taint_report.result_value:#010x}，"
         f"重放 RAX={taint_report.replayed_result_value:#010x}，"

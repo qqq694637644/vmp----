@@ -34,6 +34,12 @@ def zero_general_registers(ctx: TritonContext) -> None:
         REG.X86_64.R15,
         REG.X86_64.RIP,
         REG.X86_64.EFLAGS,
+        REG.X86_64.CS,
+        REG.X86_64.DS,
+        REG.X86_64.ES,
+        REG.X86_64.FS,
+        REG.X86_64.GS,
+        REG.X86_64.SS,
     ):
         ctx.setConcreteRegisterValue(make_register(ctx, reg_const), 0)
 
@@ -75,6 +81,12 @@ def apply_entry_registers(ctx: TritonContext, config: RecoveryConfig) -> None:
     for reg_const, value in register_values:
         ctx.setConcreteRegisterValue(make_register(ctx, reg_const), value)
     ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.EFLAGS), entry.eflags)
+    ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.CS), entry.cs)
+    ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.DS), entry.ds)
+    ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.ES), entry.es)
+    ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.FS), entry.fs)
+    ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.GS), entry.gs)
+    ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.SS), entry.ss)
 
 
 def apply_entry_vector_state(ctx: TritonContext, config: RecoveryConfig) -> None:
@@ -120,6 +132,9 @@ def initialize_context(config: RecoveryConfig) -> TritonContext:
         if len(config.vm_context_bytes) != config.vm_context_region.size:
             raise ValueError("VM 上下文快照长度与配置不一致")
         ctx.setConcreteMemoryAreaValue(config.vm_context_region.base, config.vm_context_bytes)
+
+    for snapshot in config.extra_memory_snapshots:
+        ctx.setConcreteMemoryAreaValue(snapshot.base, snapshot.bytes)
 
     ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.RCX), config.plaintext_value)
     ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.RDX), config.key_value)

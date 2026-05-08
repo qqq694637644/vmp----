@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import re
 
-from triton import REG, TritonContext
+from triton import CALLBACK, REG, TritonContext
 
-from .models import DependencyNode, RecoveryConfig, TaintAnalysisResult, TraceStep
+from .models import DependencyNode, MemoryRegion, RecoveryConfig, TaintAnalysisResult, TraceStep
 from .trace_io import parse_trace
 from .triton_runtime import initialize_context, replay_trace
 
@@ -39,17 +39,124 @@ def extract_reference_ids(ast_text: str) -> tuple[int, ...]:
     return tuple(sorted({int(ref_id) for ref_id in REF_RE.findall(ast_text)}))
 
 
+def build_seeded_register_names(config: RecoveryConfig) -> set[str]:
+    # 这里只把我们显式写入的入口状态视为已覆盖，便于精确找出还缺哪些寄存器状态。
+    seeded = {
+        "rax",
+        "rbx",
+        "rcx",
+        "rdx",
+        "rsi",
+        "rdi",
+        "rbp",
+        "rsp",
+        "r8",
+        "r9",
+        "r10",
+        "r11",
+        "r12",
+        "r13",
+        "r14",
+        "r15",
+        "rip",
+        "eflags",
+        "cs",
+        "ds",
+        "es",
+        "fs",
+        "gs",
+        "ss",
+        "mxcsr",
+        "mxcsr_mask",
+    }
+    seeded.update(
+        {
+            "al",
+            "ah",
+            "ax",
+            "eax",
+            "bl",
+            "bh",
+            "bx",
+            "ebx",
+            "cl",
+            "ch",
+            "cx",
+            "ecx",
+            "dl",
+            "dh",
+            "dx",
+            "edx",
+            "spl",
+            "sp",
+            "esp",
+            "bpl",
+            "bp",
+            "ebp",
+            "sil",
+            "si",
+            "esi",
+            "dil",
+            "di",
+            "edi",
+            "ip",
+            "eip",
+        }
+    )
+    seeded.update({f"r{index}{suffix}" for index in range(8, 16) for suffix in ("", "b", "w", "d")})
+    seeded.update({"ac", "af", "cf", "df", "id", "if", "nt", "of", "pf", "sf", "tf", "vm", "vip", "vif", "rf", "zf"})
+    seeded.update({f"xmm{index}" for index in range(32)})
+    seeded.update({f"ymm{index}" for index in range(32)})
+    return seeded
+
+
+def collapse_memory_ranges(accesses: set[tuple[int, int]]) -> tuple[MemoryRegion, ...]:
+    if not accesses:
+        return ()
+
+    intervals = sorted((address, address + max(size, 1)) for address, size in accesses)
+    merged: list[list[int]] = []
+    for start, end in intervals:
+        if not merged or start > merged[-1][1]:
+            merged.append([start, end])
+            continue
+        if end > merged[-1][1]:
+            merged[-1][1] = end
+
+    return tuple(
+        MemoryRegion("missing_memory", base, end - base)
+        for base, end in merged
+    )
+
+
 def run_taint_analysis(trace_path, config: RecoveryConfig) -> tuple[int, int, TaintAnalysisResult]:
     trace = parse_trace(trace_path)
     entry_address, function_size, steps = trace
     ctx = initialize_context(config)
     tracked_regions = config.tracked_regions()
+    seeded_register_names = build_seeded_register_names(config)
 
     tainted_steps: list[TraceStep] = []
     dependency_nodes: dict[int, DependencyNode] = {}
     dependency_graph: dict[int, tuple[int, ...]] = {}
     expr_step_map: dict[int, int] = {}
     context_hits: set[str] = set()
+    missing_memory_accesses: set[tuple[int, int]] = set()
+    missing_registers: set[str] = set()
+
+    def memory_probe(probe_ctx: TritonContext, memory_access) -> None:
+        address = memory_access.getAddress()
+        size = memory_access.getSize()
+        if probe_ctx.isConcreteMemoryValueDefined(memory_access, size) == False:
+            missing_memory_accesses.add((address, size))
+
+    def register_probe(_probe_ctx: TritonContext, register) -> None:
+        register_name = register.getName().lower()
+        if register_name not in seeded_register_names:
+            missing_registers.add(register_name)
+
+    ctx.addCallback(CALLBACK.GET_CONCRETE_MEMORY_VALUE, memory_probe)
+    ctx.addCallback(CALLBACK.GET_CONCRETE_REGISTER_VALUE, register_probe)
 
     def observer(step: TraceStep, instruction, _context: TritonContext) -> None:
         if instruction.isTainted():
@@ -106,6 +213,7 @@ def run_taint_analysis(trace_path, config: RecoveryConfig) -> tuple[int, int, Ta
         )
     )
     tainted_registers = tuple(sorted(register.getName() for register in ctx.getTaintedRegisters()))
+    missing_memory_regions = collapse_memory_ranges(missing_memory_accesses)
 
     result = TaintAnalysisResult(
         tainted_steps=tuple(tainted_steps),
@@ -119,6 +227,8 @@ def run_taint_analysis(trace_path, config: RecoveryConfig) -> tuple[int, int, Ta
         result_bytes=trace.result_bytes if trace.result_bytes is not None else b"",
         sink_reached=replayed_result_value == expected_result_value,
         sink_tainted=result_expression.isTainted(),
+        missing_memory_regions=missing_memory_regions,
+        missing_registers=tuple(sorted(missing_registers)),
         tainted_memory=tainted_memory,
         tainted_registers=tainted_registers,
         context_hits=tuple(sorted(context_hits)),

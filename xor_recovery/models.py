@@ -39,6 +39,12 @@ class EntryRegisters:
     r14: int
     r15: int
     eflags: int
+    cs: int
+    ds: int
+    es: int
+    fs: int
+    gs: int
+    ss: int
 
 
 @dataclass(frozen=True)
@@ -47,6 +53,16 @@ class EntryVectorState:
     mxcsr_mask: int
     xmm_registers: tuple[bytes, ...]
     ymm_high_registers: tuple[bytes, ...] = ()
+
+
+@dataclass(frozen=True)
+class MemorySnapshot:
+    base: int
+    bytes: bytes
+
+    @property
+    def size(self) -> int:
+        return len(self.bytes)
 
 
 @dataclass(frozen=True)
@@ -59,6 +75,7 @@ class TraceMetadata:
     entry_vector_state: EntryVectorState | None = None
     vm_context_base: int | None = None
     vm_context_bytes: bytes | None = None
+    extra_memory_snapshots: tuple[MemorySnapshot, ...] = ()
     stack_pointer: int | None = None
     return_address: int | None = None
     result_value: int | None = None
@@ -97,6 +114,7 @@ class RecoveryConfig:
     stack_bytes: bytes | None = None
     vm_context_region: MemoryRegion | None = None
     vm_context_bytes: bytes | None = None
+    extra_memory_snapshots: tuple[MemorySnapshot, ...] = ()
     stack_size: int = 0x2000
 
     @property
@@ -110,6 +128,11 @@ class RecoveryConfig:
             key = (self.vm_context_region.base, self.vm_context_region.size)
             if key not in seen:
                 regions.append(self.vm_context_region)
+                seen.add(key)
+        for snapshot in self.extra_memory_snapshots:
+            key = (snapshot.base, snapshot.size)
+            if key not in seen:
+                regions.append(MemoryRegion("extra_snapshot", snapshot.base, snapshot.size))
                 seen.add(key)
         return tuple(regions)
 
@@ -135,6 +158,8 @@ class TaintAnalysisResult:
     result_bytes: bytes
     sink_reached: bool
     sink_tainted: bool
+    missing_memory_regions: tuple[MemoryRegion, ...]
+    missing_registers: tuple[str, ...]
     tainted_memory: tuple[str, ...]
     tainted_registers: tuple[str, ...]
     context_hits: tuple[str, ...]

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .analysis import run_taint_analysis
-from .models import MemoryRegion, RecoveryConfig, RecoveryResult, TraceMetadata
+from .models import MemoryRegion, MemorySnapshot, RecoveryConfig, RecoveryResult, TraceMetadata
 from .symbolic import recover_formulas
 
 
@@ -21,6 +21,7 @@ def build_config(
     vm_context_base: int | None = None,
     vm_context_size: int | None = None,
     vm_context_bytes=None,
+    extra_memory_snapshots: tuple[MemorySnapshot, ...] = (),
 ) -> RecoveryConfig:
     vm_context_region = None
     if vm_context_base is not None:
@@ -42,6 +43,7 @@ def build_config(
         stack_bytes=stack_bytes,
         vm_context_region=vm_context_region,
         vm_context_bytes=vm_context_bytes,
+        extra_memory_snapshots=extra_memory_snapshots,
         stack_size=stack_size,
     )
 
@@ -80,6 +82,7 @@ def build_config_from_trace(
         vm_context_base=trace.vm_context_base,
         vm_context_size=len(trace.vm_context_bytes),
         vm_context_bytes=trace.vm_context_bytes,
+        extra_memory_snapshots=trace.extra_memory_snapshots,
     )
 
 
