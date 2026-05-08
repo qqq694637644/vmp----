@@ -32,6 +32,10 @@ def recover_formulas(trace_path, config: RecoveryConfig, taint_report: TaintAnal
         raise RuntimeError(
             f"第二遍返回根不一致: expected={root_expr_id} actual={result_expression.getId()}"
         )
+    if not taint_report.sink_reached:
+        raise RuntimeError(
+            f"未跑通到最终汇点: 期望 RAX={taint_report.result_value:#x}，重放得到 RAX={taint_report.replayed_result_value:#x}"
+        )
 
     expected_slice = set(taint_report.result_slices[result_name])
     actual_slice = ctx.sliceExpressions(result_expression)

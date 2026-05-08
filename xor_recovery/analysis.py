@@ -80,14 +80,14 @@ def run_taint_analysis(trace_path, config: RecoveryConfig) -> tuple[int, int, Ta
     result_expression = ctx.getSymbolicRegister(result_register)
     if result_expression is None:
         raise RuntimeError("返回寄存器 RAX 没有符号表达式，无法还原算法")
-    if not result_expression.isTainted():
-        raise RuntimeError("返回寄存器 RAX 没有受输入污点影响")
 
     result_name = "reg:rax"
     slice_expressions = ctx.sliceExpressions(result_expression)
     result_roots = {result_name: result_expression.getId()}
     result_slices = {result_name: tuple(sorted(slice_expressions.keys()))}
     result_sizes = {result_name: config.result_size}
+    replayed_result_value = ctx.getConcreteRegisterValue(result_register)
+    expected_result_value = trace.result_value if trace.result_value is not None else 0
 
     for expr_id, expr in slice_expressions.items():
         if expr_id not in dependency_nodes:
@@ -114,8 +114,11 @@ def run_taint_analysis(trace_path, config: RecoveryConfig) -> tuple[int, int, Ta
         result_roots=result_roots,
         result_slices=result_slices,
         result_sizes=result_sizes,
-        result_value=trace.result_value if trace.result_value is not None else 0,
+        result_value=expected_result_value,
+        replayed_result_value=replayed_result_value,
         result_bytes=trace.result_bytes if trace.result_bytes is not None else b"",
+        sink_reached=replayed_result_value == expected_result_value,
+        sink_tainted=result_expression.isTainted(),
         tainted_memory=tainted_memory,
         tainted_registers=tainted_registers,
         context_hits=tuple(sorted(context_hits)),

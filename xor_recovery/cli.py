@@ -4,8 +4,10 @@ import argparse
 import sys
 from pathlib import Path
 
-from .pipeline import build_config_from_trace, recover
+from .analysis import run_taint_analysis
+from .pipeline import build_config_from_trace
 from .snapshot import get_minimal_snapshot_items
+from .symbolic import recover_formulas
 
 
 def format_hex(value: int) -> str:
@@ -56,34 +58,44 @@ def main() -> int:
     for item in get_minimal_snapshot_items():
         print(f"  - {item}")
 
-    result = recover(trace_path, config)
+    _entry_address, _function_size, taint_report = run_taint_analysis(trace_path, config)
     print("第一遍：动态污点分析")
-    print(f"  污点步骤数: {len(result.taint.tainted_steps)}")
+    print(f"  污点步骤数: {len(taint_report.tainted_steps)}")
     print("  关键指令:")
-    for step in result.taint.tainted_steps[:12]:
+    for step in taint_report.tainted_steps[:12]:
         print(f"    {format_step_preview(step)}")
-    if len(result.taint.tainted_steps) > 12:
-        print(f"    ... 省略 {len(result.taint.tainted_steps) - 12} 项")
-    print(f"  关键寄存器: {format_preview(result.taint.tainted_registers)}")
-    print(f"  关键内存: {format_preview(result.taint.tainted_memory)}")
-    print(f"  关键上下文偏移: {format_preview(result.taint.context_hits)}")
+    if len(taint_report.tainted_steps) > 12:
+        print(f"    ... 省略 {len(taint_report.tainted_steps) - 12} 项")
+    print(f"  关键寄存器: {format_preview(taint_report.tainted_registers)}")
+    print(f"  关键内存: {format_preview(taint_report.tainted_memory)}")
+    print(f"  关键上下文偏移: {format_preview(taint_report.context_hits)}")
+    print(
+        f"  最终汇点: 期望 RAX={taint_report.result_value:#010x}，"
+        f"重放 RAX={taint_report.replayed_result_value:#010x}，"
+        f"污点命中={'是' if taint_report.sink_tainted else '否'}，"
+        f"汇点到达={'是' if taint_report.sink_reached else '否'}"
+    )
     print("  返回根:")
-    for result_name, slice_ids in sorted(result.taint.result_slices.items()):
-        root_id = result.taint.result_roots[result_name]
-        result_size = result.taint.result_sizes[result_name]
+    for result_name, slice_ids in sorted(taint_report.result_slices.items()):
+        root_id = taint_report.result_roots[result_name]
+        result_size = taint_report.result_sizes[result_name]
         print(f"    {result_name} size={result_size} -> root={root_id} slice_size={len(slice_ids)}")
 
-    print(f"  依赖节点数: {len(result.taint.dependency_graph)}")
-    for expr_id, references in list(sorted(result.taint.dependency_graph.items()))[:10]:
+    print(f"  依赖节点数: {len(taint_report.dependency_graph)}")
+    for expr_id, references in list(sorted(taint_report.dependency_graph.items()))[:10]:
         refs_text = ", ".join(str(ref_id) for ref_id in references) if references else "无"
-        node = result.taint.dependency_nodes.get(expr_id)
+        node = taint_report.dependency_nodes.get(expr_id)
         origin = node.origin if node is not None else "unknown"
         print(f"    ref!{expr_id}: {origin} -> {refs_text}")
-    if len(result.taint.dependency_graph) > 10:
-        print(f"    ... 省略 {len(result.taint.dependency_graph) - 10} 项")
+    if len(taint_report.dependency_graph) > 10:
+        print(f"    ... 省略 {len(taint_report.dependency_graph) - 10} 项")
+
+    if not taint_report.sink_reached:
+        return 1
 
     print("第二遍：符号执行")
-    for formula in result.formulas:
+    _, _, formulas = recover_formulas(trace_path, config, taint_report)
+    for formula in formulas:
         print(
             f"  {formula.result_name}[{formula.byte_offset}]: {formula.formula_text} "
             f"=> {formula.evaluated_value:#04x} (slice={formula.slice_size})"

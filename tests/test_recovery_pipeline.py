@@ -48,6 +48,9 @@ class RecoveryPipelineTest(unittest.TestCase):
         self.assertGreater(len(result.taint.tainted_steps), 0)
         self.assertEqual(list(result.taint.result_roots.keys()), ["reg:rax"])
         self.assertEqual(result.taint.result_sizes["reg:rax"], 4)
+        self.assertTrue(result.taint.sink_reached)
+        self.assertTrue(result.taint.sink_tainted)
+        self.assertEqual(result.taint.replayed_result_value, result.taint.result_value)
         for formula in result.formulas:
             self.assertIn("bvxor", formula.formula_text)
             self.assertIn("extract", formula.formula_text)

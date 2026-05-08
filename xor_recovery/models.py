@@ -131,7 +131,10 @@ class TaintAnalysisResult:
     result_slices: dict[str, tuple[int, ...]]
     result_sizes: dict[str, int]
     result_value: int
+    replayed_result_value: int
     result_bytes: bytes
+    sink_reached: bool
+    sink_tainted: bool
     tainted_memory: tuple[str, ...]
     tainted_registers: tuple[str, ...]
     context_hits: tuple[str, ...]
