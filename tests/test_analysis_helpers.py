@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 
 from xor_recovery.analysis import collapse_memory_ranges, is_vm_context_label
+from xor_recovery.cli import build_parser
+from xor_recovery.pipeline import build_config
 from xor_recovery.snapshot import get_minimal_snapshot_items
 from xor_recovery.trace_io import parse_trace
 
@@ -29,6 +31,27 @@ class AnalysisHelperTest(unittest.TestCase):
         self.assertIn("入口全量可读内存快照：所有可读提交页，单独写入快照文件用于 Triton 回放", items)
         self.assertIn("VM 上下文：函数内部虚拟机状态块、状态槽、表驱动区", items)
         self.assertIn("返回值：RAX，作为函数最终输出锚点", items)
+
+    def test_watch_memory_cli_parse(self) -> None:
+        args = build_parser().parse_args([
+            "trace.log",
+            "--watch-memory",
+            "0x14FE08",
+            "--watch-memory",
+            "0x14FE58",
+        ])
+        self.assertEqual(args.watch_memory, [0x14FE08, 0x14FE58])
+
+    def test_build_config_watch_memory_addresses(self) -> None:
+        config = build_config(
+            plaintext_value=1,
+            key_value=2,
+            entry_address=3,
+            stack_base=0x1000,
+            return_address=0x2000,
+            watch_memory_addresses=(0x14FE08, 0x14FE58),
+        )
+        self.assertEqual(config.watch_memory_addresses, (0x14FE08, 0x14FE58))
 
     def test_parse_entry_memory_snapshot_file(self) -> None:
         snapshot_path = Path(__file__).resolve().parents[1] / "build" / "_test_entry_memory.snap"

@@ -146,6 +146,7 @@ class RecoveryConfig:
     vm_context_bytes: bytes | None = None
     entry_memory_snapshots: tuple[MemorySnapshot, ...] = ()
     extra_memory_snapshots: tuple[MemorySnapshot, ...] = ()
+    watch_memory_addresses: tuple[int, ...] = ()
     stack_size: int = 0x2000
 
     @property
@@ -194,6 +195,7 @@ class TaintAnalysisResult:
     tainted_memory: tuple[str, ...]
     tainted_registers: tuple[str, ...]
     context_hits: tuple[str, ...]
+    watched_memory_writes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

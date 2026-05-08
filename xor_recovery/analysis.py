@@ -135,6 +135,7 @@ def run_taint_analysis(trace_path, config: RecoveryConfig) -> tuple[int, int, Ta
     ctx = initialize_context(config)
     tracked_regions = config.tracked_regions()
     seeded_register_names = build_seeded_register_names(config)
+    watch_memory_addresses = tuple(dict.fromkeys(config.watch_memory_addresses))
 
     tainted_steps: list[TraceStep] = []
     dependency_nodes: dict[int, DependencyNode] = {}
@@ -143,6 +144,8 @@ def run_taint_analysis(trace_path, config: RecoveryConfig) -> tuple[int, int, Ta
     context_hits: set[str] = set()
     missing_memory_accesses: set[tuple[int, int]] = set()
     missing_registers: set[str] = set()
+    watched_memory_writes: list[str] = []
+    watched_memory_seen: set[int] = set()
 
     def memory_probe(probe_ctx: TritonContext, memory_access) -> None:
         address = memory_access.getAddress()
@@ -170,6 +173,19 @@ def run_taint_analysis(trace_path, config: RecoveryConfig) -> tuple[int, int, Ta
             label = describe_address(memory_access.getAddress(), tracked_regions)
             if is_vm_context_label(label):
                 context_hits.add(label)
+            store_address = memory_access.getAddress()
+            store_size = max(1, memory_access.getSize())
+            for watched_address in watch_memory_addresses:
+                if watched_address in watched_memory_seen:
+                    continue
+                if not (store_address <= watched_address < store_address + store_size):
+                    continue
+                concrete_bytes = _context.getConcreteMemoryAreaValue(store_address, store_size, False)
+                watched_memory_writes.append(
+                    f"step={step.index} rip={step.address:#x} watched={describe_address(watched_address, tracked_regions)} "
+                    f"store={store_address:#x} size={store_size} bytes={concrete_bytes.hex(' ')}"
+                )
+                watched_memory_seen.add(watched_address)
 
         for symbolic_expression in instruction.getSymbolicExpressions():
             expr_id = symbolic_expression.getId()
@@ -232,5 +248,6 @@ def run_taint_analysis(trace_path, config: RecoveryConfig) -> tuple[int, int, Ta
         tainted_memory=tainted_memory,
         tainted_registers=tainted_registers,
         context_hits=tuple(sorted(context_hits)),
+        watched_memory_writes=tuple(watched_memory_writes),
     )
     return entry_address, function_size, result

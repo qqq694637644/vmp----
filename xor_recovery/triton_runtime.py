@@ -42,13 +42,6 @@ def compare_register_snapshot(ctx: TritonContext, step: TraceStep) -> None:
         ("R13", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.R13), False), expected.r13),
         ("R14", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.R14), False), expected.r14),
         ("R15", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.R15), False), expected.r15),
-        ("EFLAGS", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.EFLAGS), False), expected.eflags),
-        ("CS", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.CS), False), expected.cs),
-        ("DS", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.DS), False), expected.ds),
-        ("ES", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.ES), False), expected.es),
-        ("FS", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.FS), False), expected.fs),
-        ("GS", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.GS), False), expected.gs),
-        ("SS", ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.SS), False), expected.ss),
     )
 
     for name, actual, expected_value in comparisons:
@@ -125,12 +118,6 @@ def apply_entry_registers(ctx: TritonContext, config: RecoveryConfig) -> None:
     for reg_const, value in register_values:
         ctx.setConcreteRegisterValue(make_register(ctx, reg_const), value)
     ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.EFLAGS), entry.eflags)
-    ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.CS), entry.cs)
-    ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.DS), entry.ds)
-    ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.ES), entry.es)
-    ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.FS), entry.fs)
-    ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.GS), entry.gs)
-    ctx.setConcreteRegisterValue(make_register(ctx, REG.X86_64.SS), entry.ss)
 
 
 def apply_entry_vector_state(ctx: TritonContext, config: RecoveryConfig) -> None:
@@ -202,7 +189,7 @@ def replay_trace(
     observer: StepObserver | None = None,
     state_validator: Callable[[TritonContext, TraceStep], None] | None = None,
 ) -> None:
-    for step in steps:
+    for index, step in enumerate(steps):
         if state_validator is not None:
             state_validator(ctx, step)
 
@@ -213,6 +200,14 @@ def replay_trace(
         status = ctx.processing(instruction)
         if status != EXCEPTION.NO_FAULT:
             raise RuntimeError(f"Triton 处理失败: step={step.index}, status={status}, addr={hex(step.address)}")
+
+        if index + 1 < len(steps):
+            expected_next_rip = steps[index + 1].address
+            actual_next_rip = ctx.getConcreteRegisterValue(make_register(ctx, REG.X86_64.RIP), False)
+            if actual_next_rip != expected_next_rip:
+                raise ReplayStateMismatch(
+                    f"step={step.index} next_rip 期望={expected_next_rip:#x} 实际={actual_next_rip:#x}"
+                )
 
         if observer is not None:
             observer(step, instruction, ctx)

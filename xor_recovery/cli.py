@@ -38,6 +38,13 @@ def format_region(region) -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="从 VMP trace 中做两遍分析并还原算法公式。")
     parser.add_argument("trace_file", help="trace_xor.exe 的输出文件")
+    parser.add_argument(
+        "--watch-memory",
+        action="append",
+        type=lambda value: int(value, 0),
+        default=[],
+        help="要监视写入的内存地址，可重复传入十六进制或十进制地址",
+    )
     return parser
 
 
@@ -55,7 +62,8 @@ def main() -> int:
     from .trace_io import parse_trace
 
     trace_metadata = parse_trace(trace_path)
-    config = build_config_from_trace(trace_metadata)
+    watch_memory_addresses = tuple(dict.fromkeys(args.watch_memory))
+    config = build_config_from_trace(trace_metadata, watch_memory_addresses=watch_memory_addresses)
 
     print(f"已读取轨迹: {trace_path}")
     print(f"函数入口: {format_hex(trace_metadata.entry_address)}")
@@ -81,6 +89,12 @@ def main() -> int:
     print(f"  关键寄存器: {format_preview(taint_report.tainted_registers)}")
     print(f"  关键内存: {format_preview(taint_report.tainted_memory)}")
     print(f"  关键上下文偏移: {format_preview(taint_report.context_hits)}")
+    if taint_report.watched_memory_writes:
+        print("  监视写入:")
+        for write in taint_report.watched_memory_writes[:12]:
+            print(f"    {write}")
+        if len(taint_report.watched_memory_writes) > 12:
+            print(f"    ... 省略 {len(taint_report.watched_memory_writes) - 12} 项")
     print("  补状态缺口:")
     if taint_report.missing_memory_regions:
         for region in taint_report.missing_memory_regions[:12]:

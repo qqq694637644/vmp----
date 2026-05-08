@@ -23,6 +23,7 @@ def build_config(
     vm_context_bytes=None,
     entry_memory_snapshots: tuple[MemorySnapshot, ...] = (),
     extra_memory_snapshots: tuple[MemorySnapshot, ...] = (),
+    watch_memory_addresses: tuple[int, ...] = (),
 ) -> RecoveryConfig:
     vm_context_region = None
     if vm_context_base is not None:
@@ -46,6 +47,7 @@ def build_config(
         vm_context_bytes=vm_context_bytes,
         entry_memory_snapshots=entry_memory_snapshots,
         extra_memory_snapshots=extra_memory_snapshots,
+        watch_memory_addresses=watch_memory_addresses,
         stack_size=stack_size,
     )
 
@@ -53,6 +55,7 @@ def build_config(
 def build_config_from_trace(
     trace: TraceMetadata,
     stack_size: int = 0x2000,
+    watch_memory_addresses: tuple[int, ...] = (),
 ) -> RecoveryConfig:
     if trace.entry_arguments is None:
         raise ValueError("轨迹里没有入口参数，无法构建恢复配置")
@@ -86,6 +89,7 @@ def build_config_from_trace(
         vm_context_bytes=trace.vm_context_bytes,
         entry_memory_snapshots=trace.entry_memory_snapshots,
         extra_memory_snapshots=trace.extra_memory_snapshots,
+        watch_memory_addresses=watch_memory_addresses,
     )
 
 
